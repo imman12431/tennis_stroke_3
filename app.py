@@ -5,19 +5,6 @@ st.set_page_config(
     layout="wide"
 )
 
-import sys
-
-
-st.write("Python version:", sys.version)
-
-
-import cv2
-
-
-st.write("OpenCV version:", cv2.__version__)
-st.write("OpenCV path:", cv2.__file__)
-
-
 
 import os
 import tempfile
