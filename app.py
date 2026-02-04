@@ -10,10 +10,6 @@ import os
 import tempfile
 from detector import detect_backhands
 
-st.set_page_config(
-    page_title="Tennis Backhand Detector",
-    layout="wide"
-)
 
 st.title("🎾 Tennis Backhand Detection Demo")
 st.markdown(
