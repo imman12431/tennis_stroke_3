@@ -5,9 +5,8 @@ numpy==1.26.4
 opencv-python-headless==4.9.0.80
 
 # ML
-tensorflow==2.12.1
+tensorflow==2.13.1
 mediapipe==0.10.9
 scikit-learn==1.3.2
 joblib==1.3.2
 tqdm==4.66.1
-keras==2.12.0
