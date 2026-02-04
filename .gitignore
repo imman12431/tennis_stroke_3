@@ -10,11 +10,21 @@ __pycache__/
 
 # Data (do NOT upload raw images/videos)
 data/
+verified_backhands/
+alcaraz.mp4
+test_video.mp4
+r.mp4
+backhand_clips/
 
 # OS files
 .DS_Store
 
-# Models
-*.keras
+.idea/
+
+# Models & weights
+models/
 *.h5
+*.keras
+*.task
+
 
