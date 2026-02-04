@@ -26,8 +26,15 @@ def detect_backhands(
     REJECTOR_MODEL_PATH = "models/tennis_stroke/rejector_mlp.h5"
     ENCODER_PATH = "models/tennis_stroke/label_encoder_keras.pkl"
 
-    keras_model = tf.keras.models.load_model(KERAS_MODEL_PATH)
-    rejector = tf.keras.models.load_model(REJECTOR_MODEL_PATH)
+    keras_model = tf.keras.models.load_model(
+        KERAS_MODEL_PATH,
+        compile=False
+    )
+
+    rejector = tf.keras.models.load_model(
+        REJECTOR_MODEL_PATH,
+        compile=False
+    )
     le = joblib.load(ENCODER_PATH)
 
     os.makedirs(output_dir, exist_ok=True)
