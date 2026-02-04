@@ -1,5 +1,5 @@
 streamlit>=1.30
-opencv-python>=4.8
+opencv-python-headless
 numpy>=1.23
 tensorflow>=2.12
 mediapipe>=0.10
