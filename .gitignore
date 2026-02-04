@@ -22,9 +22,8 @@ backhand_clips/
 .idea/
 
 # Models & weights
-models/
-*.h5
-*.keras
-*.task
+pose_landmarker_full.task
+image_expert_v1.h5
+image_expert_v2.keras
 
 
