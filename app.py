@@ -3,6 +3,14 @@ import streamlit as st
 
 st.write("Python version:", sys.version)
 
+
+import cv2
+import streamlit as st
+
+st.write("OpenCV version:", cv2.__version__)
+st.write("OpenCV path:", cv2.__file__)
+
+
 import streamlit as st
 import os
 import tempfile
