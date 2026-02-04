@@ -1,17 +1,24 @@
-import sys
 import streamlit as st
+
+st.set_page_config(
+    page_title="Tennis Backhand Detector",
+    layout="wide"
+)
+
+import sys
+
 
 st.write("Python version:", sys.version)
 
 
 import cv2
-import streamlit as st
+
 
 st.write("OpenCV version:", cv2.__version__)
 st.write("OpenCV path:", cv2.__file__)
 
 
-import streamlit as st
+
 import os
 import tempfile
 from detector import detect_backhands
