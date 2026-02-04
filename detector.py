@@ -22,8 +22,8 @@ def detect_backhands(
     # Load models
     # ----------------------------
     MODEL_ASSET_PATH = "pose_landmarker_heavy.task"
-    KERAS_MODEL_PATH = "models/tennis_stroke/tennis_model_keras.h5"
-    REJECTOR_MODEL_PATH = "models/tennis_stroke/rejector_mlp.h5"
+    KERAS_MODEL_PATH = "models/tennis_stroke/tennis_model_keras"
+    REJECTOR_MODEL_PATH = "models/tennis_stroke/skeleton_rejector"
     ENCODER_PATH = "models/tennis_stroke/label_encoder_keras.pkl"
 
     keras_model = tf.keras.models.load_model(

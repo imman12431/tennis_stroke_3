@@ -6,9 +6,6 @@ st.set_page_config(
 )
 
 import os
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
-
-
 import tempfile
 from detector import detect_backhands
 
