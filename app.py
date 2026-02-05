@@ -4,8 +4,6 @@ import tempfile
 import threading
 import queue
 
-from streamlit_autorefresh import st_autorefresh
-
 # --------------------------------------------------
 # TensorFlow env
 # --------------------------------------------------
@@ -35,12 +33,6 @@ if "worker" not in st.session_state:
     st.session_state.worker = None
 if "logs" not in st.session_state:
     st.session_state.logs = []
-
-# --------------------------------------------------
-# Auto-refresh ONLY while processing
-# --------------------------------------------------
-if st.session_state.processing:
-    st_autorefresh(interval=1000, key="log_refresh")
 
 # --------------------------------------------------
 # UI
@@ -78,6 +70,9 @@ uploaded_file = st.file_uploader(
     disabled=st.session_state.processing
 )
 
+# --------------------------------------------------
+# Worker thread
+# --------------------------------------------------
 def worker_fn(video_path, output_dir, log_queue):
     def logger(msg):
         log_queue.put(msg)
@@ -116,7 +111,7 @@ if uploaded_file and not st.session_state.processing:
         st.session_state.worker.start()
 
 # --------------------------------------------------
-# Drain log queue on EVERY rerun
+# Drain log queue (EVERY rerun)
 # --------------------------------------------------
 while not st.session_state.log_queue.empty():
     item = st.session_state.log_queue.get()
@@ -132,7 +127,10 @@ while not st.session_state.log_queue.empty():
 # --------------------------------------------------
 if st.session_state.logs:
     st.subheader("Processing Log")
-    st.code("\n".join(st.session_state.logs[-20:]), language="text")
+    st.code(
+        "\n".join(st.session_state.logs[-20:]),
+        language="text"
+    )
 
 # --------------------------------------------------
 # Results
@@ -142,3 +140,10 @@ if not st.session_state.processing and st.session_state.clips:
     for i, clip in enumerate(st.session_state.clips, 1):
         with st.expander(f"🎾 Backhand {i}", expanded=(i == 1)):
             st.video(clip)
+
+# --------------------------------------------------
+# ⏱️ FORCE RERUN WHILE PROCESSING (THE MAGIC)
+# --------------------------------------------------
+if st.session_state.processing:
+    time.sleep(1)
+    st.rerun()
