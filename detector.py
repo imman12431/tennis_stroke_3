@@ -224,7 +224,7 @@ def detect_backhands(
                             output_dir, f"backhand_{global_clip_count}.mp4"
                         )
 
-                        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                        fourcc = cv2.VideoWriter_fourcc(*"avc1")
                         current_writer = cv2.VideoWriter(
                             clip_path, fourcc, fps, (width, height)
                         )
