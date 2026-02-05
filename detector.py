@@ -9,14 +9,19 @@ def detect_backhands(
     Returns a list of output clip paths.
     """
 
+    # Suppress MediaPipe GPU warnings
+    import os
+    os.environ['GLOG_minloglevel'] = '2'
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
     import cv2
     import numpy as np
     import tensorflow as tf
     import mediapipe as mp
     import joblib
-    import os
     from collections import deque
     from mediapipe.tasks import python
+    import gc
 
     # ----------------------------
     # Load models
@@ -27,6 +32,7 @@ def detect_backhands(
     ENCODER_PATH = "models/tennis_stroke/label_encoder_keras.pkl"
 
     try:
+        log_callback("🔄 Loading models...")
         keras_model = tf.keras.models.load_model(
             KERAS_MODEL_PATH,
             compile=False
@@ -38,6 +44,7 @@ def detect_backhands(
         )
 
         le = joblib.load(ENCODER_PATH)
+        log_callback("✅ Models loaded successfully")
     except Exception as e:
         log_callback(f"❌ Error loading models: {str(e)}")
         raise
@@ -55,14 +62,20 @@ def detect_backhands(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps if fps > 0 else 0
 
-    log_callback(f"📹 Video info: {width}x{height} @ {fps}fps, {total_frames} frames")
+    log_callback(f"📹 Video: {width}x{height} @ {fps}fps | {total_frames} frames ({duration:.1f}s)")
+
+    # Check video size
+    if total_frames > 18000:  # ~10 min at 30fps
+        log_callback(f"⚠️ Warning: Long video ({duration / 60:.1f} minutes). Processing may take several minutes.")
 
     frame_buffer = deque(maxlen=fps)  # 1 second pre-buffer
 
     # ----------------------------
     # MediaPipe — FORCE CPU (critical for Streamlit)
     # ----------------------------
+    log_callback("🔄 Initializing pose detector...")
     base_options = python.BaseOptions(
         model_asset_path=MODEL_ASSET_PATH,
         delegate=python.BaseOptions.Delegate.CPU
@@ -81,35 +94,50 @@ def detect_backhands(
     # ----------------------------
     try:
         with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
+            log_callback("✅ Pose detector ready. Starting analysis...")
             frame_count = 0
             clip_count = 0
             frames_to_record = 0
             cooldown_frames = 0
             stroke_active = False
+            last_progress_log = 0
 
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
+                    log_callback(f"📍 Reached end of video at frame {frame_count}")
                     break
 
                 timestamp_ms = int(1000 * frame_count / fps)
                 frame_count += 1
                 frame_buffer.append(frame.copy())
 
-                # Progress logging every 30 frames
-                if frame_count % 30 == 0:
+                # Progress logging every 2 seconds
+                current_time = frame_count / fps
+                if current_time - last_progress_log >= 2.0:
                     progress = (frame_count / total_frames) * 100 if total_frames > 0 else 0
-                    log_callback(f"⏳ Processing... {progress:.1f}% ({frame_count}/{total_frames} frames)")
+                    log_callback(
+                        f"⏳ {progress:.1f}% | {current_time:.1f}s / {duration:.1f}s | {clip_count} backhands found")
+                    last_progress_log = current_time
+
+                    # Force garbage collection every 100 frames to prevent memory buildup
+                    if frame_count % 100 == 0:
+                        gc.collect()
 
                 if cooldown_frames > 0:
                     cooldown_frames -= 1
 
-                mp_image = mp.Image(
-                    image_format=mp.ImageFormat.SRGB,
-                    data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                )
+                try:
+                    mp_image = mp.Image(
+                        image_format=mp.ImageFormat.SRGB,
+                        data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    )
 
-                result = landmarker.detect_for_video(mp_image, timestamp_ms)
+                    result = landmarker.detect_for_video(mp_image, timestamp_ms)
+                except Exception as e:
+                    log_callback(f"⚠️ Frame {frame_count} skipped: {str(e)}")
+                    continue
+
                 is_backhand = False
 
                 # ----------------------------
@@ -139,30 +167,34 @@ def detect_backhands(
 
                     X = np.array([features], dtype=np.float32)
 
-                    skel_pred = keras_model.predict(X, verbose=0)[0]
-                    skel_label = le.inverse_transform([np.argmax(skel_pred)])[0]
-                    skel_conf = np.max(skel_pred)
+                    try:
+                        skel_pred = keras_model.predict(X, verbose=0)[0]
+                        skel_label = le.inverse_transform([np.argmax(skel_pred)])[0]
+                        skel_conf = np.max(skel_pred)
 
-                    if (
-                            skel_label.lower() == "backhand"
-                            and skel_conf > 0.85
-                            and cooldown_frames == 0
-                    ):
-                        reject_score = rejector.predict(X, verbose=0)[0][0]
+                        if (
+                                skel_label.lower() == "backhand"
+                                and skel_conf > 0.85
+                                and cooldown_frames == 0
+                        ):
+                            reject_score = rejector.predict(X, verbose=0)[0][0]
 
-                        if reject_score > 0.9:
-                            is_backhand = True
-                            stroke_active = True
+                            if reject_score > 0.9:
+                                is_backhand = True
+                                stroke_active = True
 
-                            log_callback(
-                                f"[{frame_count / fps:6.2f}s] ✅ BACKHAND ACCEPTED | "
-                                f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
-                            )
-                        else:
-                            log_callback(
-                                f"[{frame_count / fps:6.2f}s] ❌ BACKHAND REJECTED | "
-                                f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
-                            )
+                                log_callback(
+                                    f"[{frame_count / fps:6.2f}s] ✅ BACKHAND ACCEPTED | "
+                                    f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
+                                )
+                            else:
+                                log_callback(
+                                    f"[{frame_count / fps:6.2f}s] ❌ BACKHAND REJECTED | "
+                                    f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
+                                )
+                    except Exception as e:
+                        log_callback(f"⚠️ Prediction error at frame {frame_count}: {str(e)}")
+                        continue
 
                 # ----------------------------
                 # Clip writing (H.264 MP4)
@@ -174,19 +206,10 @@ def detect_backhands(
                     try:
                         current_writer = cv2.VideoWriter(
                             clip_path,
-                            cv2.VideoWriter_fourcc(*"avc1"),
+                            cv2.VideoWriter_fourcc(*"mp4v"),  # Use mp4v for better compatibility
                             fps,
                             (width, height)
                         )
-
-                        if not current_writer.isOpened():
-                            log_callback(f"⚠️ Failed to create video writer with avc1, trying mp4v codec...")
-                            current_writer = cv2.VideoWriter(
-                                clip_path,
-                                cv2.VideoWriter_fourcc(*"mp4v"),
-                                fps,
-                                (width, height)
-                            )
 
                         if not current_writer.isOpened():
                             log_callback(f"❌ Failed to create video writer for {clip_path}")
@@ -199,6 +222,7 @@ def detect_backhands(
                         frames_to_record = int(fps * 1.5)
                         cooldown_frames = fps * 2
                         clip_paths.append(clip_path)
+                        log_callback(f"📹 Recording clip {clip_count}...")
 
                     except Exception as e:
                         log_callback(f"❌ VideoWriter error: {str(e)}")
@@ -217,15 +241,22 @@ def detect_backhands(
                             current_writer.release()
                             current_writer = None
                         stroke_active = False
+                        log_callback(f"✅ Clip {clip_count} saved")
 
+            log_callback(f"🏁 Finished processing {frame_count} frames")
+
+    except KeyboardInterrupt:
+        log_callback("⚠️ Processing interrupted by user")
     except Exception as e:
         log_callback(f"❌ Error during processing: {str(e)}")
+        import traceback
+        log_callback(traceback.format_exc())
         raise
 
     finally:
         if current_writer is not None:
             current_writer.release()
         cap.release()
-        log_callback(f"✅ Processing complete!")
+        log_callback(f"✅ Processing complete! Found {len(clip_paths)} backhand(s)")
 
     return clip_paths
