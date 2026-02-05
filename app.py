@@ -3,6 +3,7 @@ import time
 import tempfile
 import threading
 import queue
+import subprocess
 
 # --------------------------------------------------
 # TensorFlow env
@@ -35,19 +36,28 @@ if "logs" not in st.session_state:
     st.session_state.logs = []
 
 # --------------------------------------------------
+# ffmpeg availability check (CRITICAL)
+# --------------------------------------------------
+with st.sidebar:
+    st.header("Environment")
+    try:
+        v = subprocess.check_output(["ffmpeg", "-version"]).decode().splitlines()[0]
+        st.success(f"ffmpeg OK: {v}")
+    except Exception as e:
+        st.error(f"ffmpeg NOT available: {e}")
+
+# --------------------------------------------------
 # UI
 # --------------------------------------------------
 st.title("🎾 Tennis Backhand Detection Demo")
-st.markdown(
-    "Upload a tennis match video. The model will automatically "
-    "detect and extract **backhand strokes**."
-)
 
 if st.session_state.processing:
     st.info("⏳ Processing video… please wait. Do not refresh the page.")
 
+st.write("Working directory:", os.getcwd())
+
 # --------------------------------------------------
-# Sidebar
+# Sidebar (logs)
 # --------------------------------------------------
 with st.sidebar:
     st.header("Debug")
@@ -100,7 +110,7 @@ if uploaded_file and not st.session_state.processing:
         st.session_state.clips = []
         st.session_state.logs.clear()
 
-        output_dir = "data/outputs"
+        output_dir = os.path.abspath("data/outputs")
         os.makedirs(output_dir, exist_ok=True)
 
         st.session_state.worker = threading.Thread(
@@ -127,22 +137,47 @@ while not st.session_state.log_queue.empty():
 # --------------------------------------------------
 if st.session_state.logs:
     st.subheader("Processing Log")
-    st.code(
-        "\n".join(st.session_state.logs[-20:]),
-        language="text"
-    )
+    st.code("\n".join(st.session_state.logs[-20:]), language="text")
 
 # --------------------------------------------------
-# Results
+# RESULTS — DIAGNOSTIC VIEW
 # --------------------------------------------------
 if not st.session_state.processing and st.session_state.clips:
     st.success(f"✅ Detected {len(st.session_state.clips)} backhand(s)!")
+
     for i, clip in enumerate(st.session_state.clips, 1):
+        clip = os.path.abspath(clip)
+
         with st.expander(f"🎾 Backhand {i}", expanded=(i == 1)):
-            st.video(clip)
+            st.write("Path:", clip)
+            st.write("Exists:", os.path.exists(clip))
+
+            if os.path.exists(clip):
+                size = os.path.getsize(clip)
+                st.write("Size (bytes):", size)
+
+                # 1️⃣ Try path-based rendering
+                st.markdown("**Path-based playback:**")
+                st.video(clip)
+
+                # 2️⃣ Try byte-based rendering
+                st.markdown("**Byte-based playback:**")
+                with open(clip, "rb") as f:
+                    video_bytes = f.read()
+                st.video(video_bytes, format="video/mp4")
+
+                # 3️⃣ Download
+                st.download_button(
+                    "⬇️ Download clip",
+                    data=video_bytes,
+                    file_name=os.path.basename(clip),
+                    mime="video/mp4"
+                )
+            else:
+                st.error("File does NOT exist at render time!")
 
 # --------------------------------------------------
-# ⏱️ FORCE RERUN WHILE PROCESSING (THE MAGIC)
+# Force rerun while processing
 # --------------------------------------------------
 if st.session_state.processing:
     time.sleep(1)
