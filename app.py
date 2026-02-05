@@ -1,23 +1,23 @@
 import os
-import time
 import tempfile
 import threading
 import queue
-
-# --------------------------------------------------
-# TensorFlow env
-# --------------------------------------------------
-os.environ['GLOG_minloglevel'] = '2'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
-os.environ['TF_NUM_INTEROP_THREADS'] = '1'
-
 import streamlit as st
+
 from detector import detect_backhands
 
+# --------------------------------------------------
+# Streamlit config
+# --------------------------------------------------
 st.set_page_config(
     page_title="Tennis Backhand Detector",
     layout="wide"
+)
+
+st.title("🎾 Tennis Backhand Detection Demo")
+st.markdown(
+    "Upload a tennis match video. The model will automatically "
+    "detect and extract **backhand strokes**."
 )
 
 # --------------------------------------------------
@@ -25,44 +25,34 @@ st.set_page_config(
 # --------------------------------------------------
 if "processing" not in st.session_state:
     st.session_state.processing = False
+
 if "clips" not in st.session_state:
     st.session_state.clips = []
-if "log_queue" not in st.session_state:
-    st.session_state.log_queue = queue.Queue()
-if "worker" not in st.session_state:
-    st.session_state.worker = None
-if "logs" not in st.session_state:
-    st.session_state.logs = []
+
+if "log_lines" not in st.session_state:
+    st.session_state.log_lines = []
+
+if "worker_started" not in st.session_state:
+    st.session_state.worker_started = False
 
 # --------------------------------------------------
-# UI
+# Thread communication
 # --------------------------------------------------
-st.title("🎾 Tennis Backhand Detection Demo")
-st.markdown(
-    "Upload a tennis match video. The model will automatically "
-    "detect and extract **backhand strokes**."
-)
+log_queue = queue.Queue()
 
-if st.session_state.processing:
-    st.info("⏳ Processing video… please wait. Do not refresh the page.")
+def streamlit_logger(msg: str):
+    log_queue.put(msg)
 
 # --------------------------------------------------
 # Sidebar
 # --------------------------------------------------
 with st.sidebar:
     st.header("Debug")
-
-    if st.button("🔍 View Debug Log", disabled=st.session_state.processing):
-        if os.path.exists("detector_debug.log"):
-            st.text_area("Debug Log", open("detector_debug.log").read(), height=400)
-
-    if st.button("🗑️ Clear Debug Log", disabled=st.session_state.processing):
-        if os.path.exists("detector_debug.log"):
-            os.remove("detector_debug.log")
-            st.success("Debug log cleared!")
+    if st.button("🗑️ Clear logs"):
+        st.session_state.log_lines.clear()
 
 # --------------------------------------------------
-# File upload
+# Upload
 # --------------------------------------------------
 uploaded_file = st.file_uploader(
     "Upload a video file",
@@ -70,25 +60,8 @@ uploaded_file = st.file_uploader(
     disabled=st.session_state.processing
 )
 
-# --------------------------------------------------
-# Worker thread
-# --------------------------------------------------
-def worker_fn(video_path, output_dir, log_queue):
-    def logger(msg):
-        log_queue.put(msg)
-
-    clips = detect_backhands(
-        video_path=video_path,
-        output_dir=output_dir,
-        log_callback=logger
-    )
-
-    log_queue.put(("__DONE__", clips))
-
-# --------------------------------------------------
-# Start job
-# --------------------------------------------------
 if uploaded_file and not st.session_state.processing:
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
         tmp.write(uploaded_file.read())
         video_path = tmp.name
@@ -97,53 +70,85 @@ if uploaded_file and not st.session_state.processing:
 
     if st.button("▶️ Run Backhand Detection"):
         st.session_state.processing = True
-        st.session_state.clips = []
-        st.session_state.logs.clear()
+        st.session_state.worker_started = False
+        st.session_state.clips.clear()
+        st.session_state.log_lines.clear()
 
-        output_dir = "data/outputs"
-        os.makedirs(output_dir, exist_ok=True)
+        # 🔑 Per-run output directory (cloud-safe)
+        output_dir = tempfile.mkdtemp(prefix="backhands_")
 
-        st.session_state.worker = threading.Thread(
-            target=worker_fn,
-            args=(video_path, output_dir, st.session_state.log_queue),
-            daemon=True
-        )
-        st.session_state.worker.start()
+        def worker():
+            try:
+                clips = detect_backhands(
+                    video_path=video_path,
+                    output_dir=output_dir,
+                    log_callback=streamlit_logger
+                )
+                log_queue.put(("__DONE__", clips))
+            except Exception as e:
+                log_queue.put(("__ERROR__", str(e)))
 
-# --------------------------------------------------
-# Drain log queue (EVERY rerun)
-# --------------------------------------------------
-while not st.session_state.log_queue.empty():
-    item = st.session_state.log_queue.get()
-
-    if isinstance(item, tuple) and item[0] == "__DONE__":
-        st.session_state.clips = item[1]
-        st.session_state.processing = False
-    else:
-        st.session_state.logs.append(item)
+        threading.Thread(target=worker, daemon=True).start()
+        st.session_state.worker_started = True
 
 # --------------------------------------------------
-# Log display
+# Processing UI
 # --------------------------------------------------
-if st.session_state.logs:
-    st.subheader("Processing Log")
-    st.code(
-        "\n".join(st.session_state.logs[-20:]),
+if st.session_state.processing:
+
+    st.warning("⏳ Processing video… please wait. Do not refresh the page.")
+
+    log_box = st.empty()
+
+    # Drain queue
+    while not log_queue.empty():
+        item = log_queue.get()
+
+        if isinstance(item, tuple) and item[0] == "__DONE__":
+            raw_clips = item[1]
+
+            # 🔑 ABSOLUTE PATH FIX (THIS IS THE KEY)
+            st.session_state.clips = [
+                os.path.abspath(c) for c in raw_clips if os.path.exists(c)
+            ]
+
+            st.session_state.processing = False
+
+        elif isinstance(item, tuple) and item[0] == "__ERROR__":
+            st.session_state.processing = False
+            st.error(item[1])
+
+        else:
+            st.session_state.log_lines.append(item)
+
+    # Show last logs
+    log_box.code(
+        "\n".join(st.session_state.log_lines[-20:]),
         language="text"
     )
 
-# --------------------------------------------------
-# Results
-# --------------------------------------------------
-if not st.session_state.processing and st.session_state.clips:
-    st.success(f"✅ Detected {len(st.session_state.clips)} backhand(s)!")
-    for i, clip in enumerate(st.session_state.clips, 1):
-        with st.expander(f"🎾 Backhand {i}", expanded=(i == 1)):
-            st.video(clip)
+    st.experimental_rerun()
 
 # --------------------------------------------------
-# ⏱️ FORCE RERUN WHILE PROCESSING (THE MAGIC)
+# Show results
 # --------------------------------------------------
-if st.session_state.processing:
-    time.sleep(1)
-    st.rerun()
+if not st.session_state.processing and st.session_state.clips:
+
+    st.success(f"✅ Detected {len(st.session_state.clips)} backhand(s)")
+
+    for i, clip in enumerate(st.session_state.clips, 1):
+        with st.expander(f"🎾 Backhand {i}", expanded=(i == 1)):
+
+            if os.path.exists(clip):
+                st.video(clip)
+
+                # Optional download
+                with open(clip, "rb") as f:
+                    st.download_button(
+                        label="⬇️ Download clip",
+                        data=f,
+                        file_name=os.path.basename(clip),
+                        mime="video/mp4"
+                    )
+            else:
+                st.warning(f"Clip missing: {clip}")
