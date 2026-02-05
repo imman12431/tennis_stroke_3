@@ -1,9 +1,12 @@
-import streamlit as st
 import os
 
-# Suppress warnings before other imports
+# Configure TensorFlow BEFORE any imports that use it
 os.environ['GLOG_minloglevel'] = '2'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
+os.environ['TF_NUM_INTEROP_THREADS'] = '1'
+
+import streamlit as st
 
 st.set_page_config(
     page_title="Tennis Backhand Detector",

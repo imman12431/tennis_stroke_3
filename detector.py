@@ -9,12 +9,10 @@ def detect_backhands(
     Returns a list of output clip paths.
     """
 
-    # Suppress warnings and configure threading
+    # Suppress warnings
     import os
     os.environ['GLOG_minloglevel'] = '2'
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-    os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
-    os.environ['TF_NUM_INTEROP_THREADS'] = '1'
 
     import cv2
     import numpy as np
@@ -26,10 +24,6 @@ def detect_backhands(
     import gc
     import sys
     from datetime import datetime
-
-    # Configure TensorFlow for single-threaded execution (important for Streamlit)
-    tf.config.threading.set_intra_op_parallelism_threads(1)
-    tf.config.threading.set_inter_op_parallelism_threads(1)
 
     # Create log file
     log_file_path = "detector_debug.log"
