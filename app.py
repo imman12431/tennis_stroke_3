@@ -9,26 +9,10 @@ import os
 import tempfile
 from detector import detect_backhands
 
-
 st.title("🎾 Tennis Backhand Detection Demo")
 st.markdown(
     "Upload a tennis match video. The model will automatically "
     "detect and extract **backhand strokes**."
-)
-
-# -----------------------
-# Sidebar controls
-# -----------------------
-st.sidebar.header("Settings")
-
-skel_threshold = st.sidebar.slider(
-    "Skeleton confidence threshold",
-    0.5, 0.99, 0.85
-)
-
-reject_threshold = st.sidebar.slider(
-    "Rejector threshold",
-    0.0, 1.0, 0.5
 )
 
 # -----------------------
@@ -53,18 +37,36 @@ if uploaded_file:
         log_area = st.empty()
         logs = []
 
+
         def streamlit_logger(msg):
             logs.append(msg)
             log_area.code("\n".join(logs[-12:]))
 
-        with st.spinner("Analyzing video..."):
-            clips = detect_backhands(
-                video_path=video_path,
-                output_dir=output_dir,
-                log_callback=streamlit_logger
-            )
 
-        st.success(f"Detected {len(clips)} backhand(s)!")
+        try:
+            with st.spinner("Analyzing video..."):
+                clips = detect_backhands(
+                    video_path=video_path,
+                    output_dir=output_dir,
+                    log_callback=streamlit_logger
+                )
 
-        for clip in clips:
-            st.video(clip)
+            st.success(f"Detected {len(clips)} backhand(s)!")
+
+            if clips:
+                for i, clip in enumerate(clips, 1):
+                    st.subheader(f"Backhand {i}")
+                    st.video(clip)
+            else:
+                st.info("No backhands detected in this video.")
+
+        except Exception as e:
+            st.error(f"Error during detection: {str(e)}")
+            import traceback
+
+            st.code(traceback.format_exc())
+
+        finally:
+            # Cleanup temporary file
+            if os.path.exists(video_path):
+                os.unlink(video_path)
