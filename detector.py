@@ -17,6 +17,7 @@ def detect_backhands(
     import os
     from collections import deque
     from mediapipe.tasks import python
+    from mediapipe.tasks.python.core import base_options as base_options_module
 
     # ----------------------------
     # Load models
@@ -35,6 +36,7 @@ def detect_backhands(
         REJECTOR_MODEL_PATH,
         compile=False
     )
+
     le = joblib.load(ENCODER_PATH)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -49,7 +51,14 @@ def detect_backhands(
 
     frame_buffer = deque(maxlen=fps)  # 1 second pre-buffer
 
-    base_options = python.BaseOptions(model_asset_path=MODEL_ASSET_PATH)
+    # ----------------------------
+    # MediaPipe — FORCE CPU (critical for Streamlit)
+    # ----------------------------
+    base_options = python.BaseOptions(
+        model_asset_path=MODEL_ASSET_PATH,
+        delegate=base_options_module.Delegate.CPU
+    )
+
     options = mp.tasks.vision.PoseLandmarkerOptions(
         base_options=base_options,
         running_mode=mp.tasks.vision.RunningMode.VIDEO
@@ -93,11 +102,13 @@ def detect_backhands(
             # ----------------------------
             if result.pose_landmarks and not stroke_active:
                 landmarks = result.pose_landmarks[0]
-                all_coords = np.array([(lm.x * width, lm.y * height) for lm in landmarks])
+                all_coords = np.array(
+                    [(lm.x * width, lm.y * height) for lm in landmarks]
+                )
 
                 mid_hip = (all_coords[23] + all_coords[24]) / 2
                 shoulder_dist = np.linalg.norm(all_coords[11] - all_coords[12])
-                if shoulder_dist < 0.001:
+                if shoulder_dist < 1e-6:
                     shoulder_dist = 1.0
 
                 relevant_indices = [0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24]
@@ -117,9 +128,6 @@ def detect_backhands(
                 skel_label = le.inverse_transform([np.argmax(skel_pred)])[0]
                 skel_conf = np.max(skel_pred)
 
-                # ----------------------------
-                # Rejector gate (ONLY log here)
-                # ----------------------------
                 if (
                     skel_label.lower() == "backhand"
                     and skel_conf > 0.85
@@ -142,14 +150,18 @@ def detect_backhands(
                         )
 
             # ----------------------------
-            # Clip writing
+            # Clip writing (H.264 MP4)
             # ----------------------------
             if is_backhand and frames_to_record <= 0:
                 clip_count += 1
                 clip_path = os.path.join(output_dir, f"backhand_{clip_count}.mp4")
 
-                # Try 'avc1' for H.264 web-compatible video
-                current_writer = cv2.VideoWriter(clip_path, cv2.VideoWriter_fourcc(*"avc1"), fps, (width, height))
+                current_writer = cv2.VideoWriter(
+                    clip_path,
+                    cv2.VideoWriter_fourcc(*"avc1"),
+                    fps,
+                    (width, height)
+                )
 
                 for f in frame_buffer:
                     current_writer.write(f)
