@@ -74,6 +74,7 @@ def detect_backhands(
     )
 
     clip_paths = []
+    current_writer = None
 
     # ----------------------------
     # Main loop
@@ -83,7 +84,6 @@ def detect_backhands(
             frame_count = 0
             clip_count = 0
             frames_to_record = 0
-            current_writer = None
             cooldown_frames = 0
             stroke_active = False
 
@@ -148,4 +148,84 @@ def detect_backhands(
                             and skel_conf > 0.85
                             and cooldown_frames == 0
                     ):
-                        reject_score = rejector.predict
+                        reject_score = rejector.predict(X, verbose=0)[0][0]
+
+                        if reject_score > 0.9:
+                            is_backhand = True
+                            stroke_active = True
+
+                            log_callback(
+                                f"[{frame_count / fps:6.2f}s] ✅ BACKHAND ACCEPTED | "
+                                f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
+                            )
+                        else:
+                            log_callback(
+                                f"[{frame_count / fps:6.2f}s] ❌ BACKHAND REJECTED | "
+                                f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
+                            )
+
+                # ----------------------------
+                # Clip writing (H.264 MP4)
+                # ----------------------------
+                if is_backhand and frames_to_record <= 0:
+                    clip_count += 1
+                    clip_path = os.path.join(output_dir, f"backhand_{clip_count}.mp4")
+
+                    try:
+                        current_writer = cv2.VideoWriter(
+                            clip_path,
+                            cv2.VideoWriter_fourcc(*"avc1"),
+                            fps,
+                            (width, height)
+                        )
+
+                        if not current_writer.isOpened():
+                            log_callback(f"⚠️ Failed to create video writer with avc1, trying mp4v codec...")
+                            current_writer = cv2.VideoWriter(
+                                clip_path,
+                                cv2.VideoWriter_fourcc(*"mp4v"),
+                                fps,
+                                (width, height)
+                            )
+
+                        if not current_writer.isOpened():
+                            log_callback(f"❌ Failed to create video writer for {clip_path}")
+                            current_writer = None
+                            continue
+
+                        for f in frame_buffer:
+                            current_writer.write(f)
+
+                        frames_to_record = int(fps * 1.5)
+                        cooldown_frames = fps * 2
+                        clip_paths.append(clip_path)
+
+                    except Exception as e:
+                        log_callback(f"❌ VideoWriter error: {str(e)}")
+                        if current_writer is not None:
+                            current_writer.release()
+                            current_writer = None
+                        continue
+
+                elif frames_to_record > 0:
+                    if current_writer is not None:
+                        current_writer.write(frame)
+                    frames_to_record -= 1
+
+                    if frames_to_record == 0:
+                        if current_writer is not None:
+                            current_writer.release()
+                            current_writer = None
+                        stroke_active = False
+
+    except Exception as e:
+        log_callback(f"❌ Error during processing: {str(e)}")
+        raise
+
+    finally:
+        if current_writer is not None:
+            current_writer.release()
+        cap.release()
+        log_callback(f"✅ Processing complete!")
+
+    return clip_paths
