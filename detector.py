@@ -1,7 +1,8 @@
 def detect_backhands(
         video_path,
         output_dir,
-        log_callback=print
+        log_callback=print,
+        max_frames=None  # Add frame limit for testing
 ):
     """
     Runs backhand detection on a video.
@@ -34,17 +35,22 @@ def detect_backhands(
         log_msg = f"[{timestamp}] {msg}"
 
         # Write to file immediately with flush
-        with open(log_file_path, "a") as f:
-            f.write(log_msg + "\n")
-            f.flush()
+        try:
+            with open(log_file_path, "a") as f:
+                f.write(log_msg + "\n")
+                f.flush()
+        except:
+            pass
 
         # Also call the callback
-        log_callback(msg)
+        try:
+            log_callback(msg)
+        except:
+            pass
 
     dual_log("=" * 50)
     dual_log("🚀 Starting backhand detection")
     dual_log(f"Python version: {sys.version}")
-    dual_log(f"OpenCV version: {cv2.__version__}")
     dual_log(f"TensorFlow version: {tf.__version__}")
     dual_log("=" * 50)
 
@@ -57,24 +63,11 @@ def detect_backhands(
     ENCODER_PATH = "models/tennis_stroke/label_encoder_keras.pkl"
 
     try:
-        dual_log("🔄 Loading skeleton model...")
-        keras_model = tf.keras.models.load_model(
-            KERAS_MODEL_PATH,
-            compile=False
-        )
-        dual_log("✅ Skeleton model loaded")
-
-        dual_log("🔄 Loading rejector model...")
-        rejector = tf.keras.models.load_model(
-            REJECTOR_MODEL_PATH,
-            compile=False
-        )
-        dual_log("✅ Rejector model loaded")
-
-        dual_log("🔄 Loading label encoder...")
+        dual_log("🔄 Loading models...")
+        keras_model = tf.keras.models.load_model(KERAS_MODEL_PATH, compile=False)
+        rejector = tf.keras.models.load_model(REJECTOR_MODEL_PATH, compile=False)
         le = joblib.load(ENCODER_PATH)
-        dual_log("✅ Label encoder loaded")
-
+        dual_log("✅ All models loaded")
     except Exception as e:
         dual_log(f"❌ Error loading models: {str(e)}")
         raise
@@ -95,31 +88,31 @@ def detect_backhands(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps if fps > 0 else 0
 
+    if max_frames:
+        total_frames = min(total_frames, max_frames)
+        dual_log(f"⚠️ Frame limit: processing only first {max_frames} frames")
+
     dual_log(f"📹 Video: {width}x{height} @ {fps}fps | {total_frames} frames ({duration:.1f}s)")
 
-    # Check video size
-    if total_frames > 18000:  # ~10 min at 30fps
-        dual_log(f"⚠️ Warning: Long video ({duration / 60:.1f} minutes). Processing may take several minutes.")
-
-    frame_buffer = deque(maxlen=fps)  # 1 second pre-buffer
+    # Smaller buffer to save memory
+    frame_buffer = deque(maxlen=fps)
 
     # ----------------------------
-    # MediaPipe — FORCE CPU (critical for Streamlit)
+    # MediaPipe
     # ----------------------------
-    dual_log("🔄 Initializing MediaPipe pose detector...")
+    dual_log("🔄 Initializing MediaPipe...")
     try:
         base_options = python.BaseOptions(
             model_asset_path=MODEL_ASSET_PATH,
             delegate=python.BaseOptions.Delegate.CPU
         )
-
         options = mp.tasks.vision.PoseLandmarkerOptions(
             base_options=base_options,
             running_mode=mp.tasks.vision.RunningMode.VIDEO
         )
-        dual_log("✅ MediaPipe options configured")
+        dual_log("✅ MediaPipe configured")
     except Exception as e:
-        dual_log(f"❌ MediaPipe configuration failed: {str(e)}")
+        dual_log(f"❌ MediaPipe error: {str(e)}")
         raise
 
     clip_paths = []
@@ -129,9 +122,8 @@ def detect_backhands(
     # Main loop
     # ----------------------------
     try:
-        dual_log("🔄 Creating pose landmarker...")
         with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
-            dual_log("✅ Pose detector ready. Starting frame-by-frame analysis...")
+            dual_log("✅ Starting analysis...")
             dual_log("=" * 50)
 
             frame_count = 0
@@ -142,139 +134,39 @@ def detect_backhands(
             last_progress_log = 0
 
             while cap.isOpened():
+                # Check frame limit
+                if max_frames and frame_count >= max_frames:
+                    dual_log(f"📍 Reached frame limit: {max_frames}")
+                    break
+
                 try:
                     ret, frame = cap.read()
                     if not ret:
-                        dual_log(f"📍 Reached end of video at frame {frame_count}")
+                        dual_log(f"📍 End of video at frame {frame_count}")
                         break
 
                     timestamp_ms = int(1000 * frame_count / fps)
                     frame_count += 1
-                    frame_buffer.append(frame.copy())
+
+                    # Only keep buffer if we might need it
+                    if not stroke_active and cooldown_frames == 0:
+                        frame_buffer.append(frame.copy())
 
                     # Progress logging every 2 seconds
                     current_time = frame_count / fps
                     if current_time - last_progress_log >= 2.0:
                         progress = (frame_count / total_frames) * 100 if total_frames > 0 else 0
-                        dual_log(
-                            f"⏳ {progress:.1f}% | Frame {frame_count}/{total_frames} | {current_time:.1f}s/{duration:.1f}s | {clip_count} clips")
+                        dual_log(f"⏳ {progress:.1f}% | Frame {frame_count}/{total_frames} | {clip_count} clips")
                         last_progress_log = current_time
 
-                        # Force garbage collection
-                        if frame_count % 100 == 0:
-                            gc.collect()
+                        # Aggressive garbage collection
+                        gc.collect()
 
                     if cooldown_frames > 0:
                         cooldown_frames -= 1
 
-                    # MediaPipe processing
-                    try:
-                        mp_image = mp.Image(
-                            image_format=mp.ImageFormat.SRGB,
-                            data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        )
-
-                        result = landmarker.detect_for_video(mp_image, timestamp_ms)
-                    except Exception as e:
-                        dual_log(f"⚠️ Frame {frame_count} MediaPipe error: {str(e)}")
-                        continue
-
-                    is_backhand = False
-
-                    # ----------------------------
-                    # Skeleton + Rejector logic
-                    # ----------------------------
-                    if result.pose_landmarks and not stroke_active:
-                        try:
-                            landmarks = result.pose_landmarks[0]
-                            all_coords = np.array(
-                                [(lm.x * width, lm.y * height) for lm in landmarks]
-                            )
-
-                            mid_hip = (all_coords[23] + all_coords[24]) / 2
-                            shoulder_dist = np.linalg.norm(all_coords[11] - all_coords[12])
-                            if shoulder_dist < 1e-6:
-                                shoulder_dist = 1.0
-
-                            relevant_indices = [0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24]
-                            features = []
-
-                            for idx in relevant_indices:
-                                lm = landmarks[idx]
-                                features.extend([
-                                    (all_coords[idx][0] - mid_hip[0]) / shoulder_dist,
-                                    (all_coords[idx][1] - mid_hip[1]) / shoulder_dist,
-                                    lm.visibility
-                                ])
-
-                            X = np.array([features], dtype=np.float32)
-
-                            skel_pred = keras_model.predict(X, verbose=0)[0]
-                            skel_label = le.inverse_transform([np.argmax(skel_pred)])[0]
-                            skel_conf = np.max(skel_pred)
-
-                            if (
-                                    skel_label.lower() == "backhand"
-                                    and skel_conf > 0.85
-                                    and cooldown_frames == 0
-                            ):
-                                reject_score = rejector.predict(X, verbose=0)[0][0]
-
-                                if reject_score > 0.9:
-                                    is_backhand = True
-                                    stroke_active = True
-
-                                    dual_log(
-                                        f"[{frame_count / fps:6.2f}s] ✅ BACKHAND ACCEPTED | "
-                                        f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
-                                    )
-                                else:
-                                    dual_log(
-                                        f"[{frame_count / fps:6.2f}s] ❌ BACKHAND REJECTED | "
-                                        f"Skel: {skel_conf:.2f} | Rejector: {reject_score:.2f}"
-                                    )
-                        except Exception as e:
-                            dual_log(f"⚠️ Prediction error at frame {frame_count}: {str(e)}")
-                            continue
-
-                    # ----------------------------
-                    # Clip writing
-                    # ----------------------------
-                    if is_backhand and frames_to_record <= 0:
-                        clip_count += 1
-                        clip_path = os.path.join(output_dir, f"backhand_{clip_count}.mp4")
-                        dual_log(f"📹 Creating clip {clip_count}: {clip_path}")
-
-                        try:
-                            current_writer = cv2.VideoWriter(
-                                clip_path,
-                                cv2.VideoWriter_fourcc(*"mp4v"),
-                                fps,
-                                (width, height)
-                            )
-
-                            if not current_writer.isOpened():
-                                dual_log(f"❌ Failed to create video writer for {clip_path}")
-                                current_writer = None
-                                continue
-
-                            dual_log(f"✅ Video writer created, writing buffered frames...")
-                            for f in frame_buffer:
-                                current_writer.write(f)
-
-                            frames_to_record = int(fps * 1.5)
-                            cooldown_frames = fps * 2
-                            clip_paths.append(clip_path)
-                            dual_log(f"📹 Recording clip {clip_count} ({frames_to_record} more frames)...")
-
-                        except Exception as e:
-                            dual_log(f"❌ VideoWriter error: {str(e)}")
-                            if current_writer is not None:
-                                current_writer.release()
-                                current_writer = None
-                            continue
-
-                    elif frames_to_record > 0:
+                    # Skip MediaPipe if recording
+                    if frames_to_record > 0:
                         if current_writer is not None:
                             current_writer.write(frame)
                         frames_to_record -= 1
@@ -284,35 +176,101 @@ def detect_backhands(
                                 current_writer.release()
                                 current_writer = None
                             stroke_active = False
-                            dual_log(f"✅ Clip {clip_count} saved successfully")
+                            dual_log(f"✅ Clip {clip_count} saved")
+                            gc.collect()  # Clean up after clip
+                        continue
+
+                    # MediaPipe processing
+                    mp_image = mp.Image(
+                        image_format=mp.ImageFormat.SRGB,
+                        data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    )
+                    result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+                    is_backhand = False
+
+                    # Skeleton + Rejector logic
+                    if result.pose_landmarks and not stroke_active:
+                        landmarks = result.pose_landmarks[0]
+                        all_coords = np.array([(lm.x * width, lm.y * height) for lm in landmarks])
+
+                        mid_hip = (all_coords[23] + all_coords[24]) / 2
+                        shoulder_dist = np.linalg.norm(all_coords[11] - all_coords[12])
+                        if shoulder_dist < 1e-6:
+                            shoulder_dist = 1.0
+
+                        relevant_indices = [0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24]
+                        features = []
+
+                        for idx in relevant_indices:
+                            lm = landmarks[idx]
+                            features.extend([
+                                (all_coords[idx][0] - mid_hip[0]) / shoulder_dist,
+                                (all_coords[idx][1] - mid_hip[1]) / shoulder_dist,
+                                lm.visibility
+                            ])
+
+                        X = np.array([features], dtype=np.float32)
+
+                        skel_pred = keras_model.predict(X, verbose=0)[0]
+                        skel_label = le.inverse_transform([np.argmax(skel_pred)])[0]
+                        skel_conf = np.max(skel_pred)
+
+                        if (skel_label.lower() == "backhand" and skel_conf > 0.85 and cooldown_frames == 0):
+                            reject_score = rejector.predict(X, verbose=0)[0][0]
+
+                            if reject_score > 0.9:
+                                is_backhand = True
+                                stroke_active = True
+                                dual_log(
+                                    f"[{frame_count / fps:6.2f}s] ✅ BACKHAND ACCEPTED | Skel: {skel_conf:.2f} | Rej: {reject_score:.2f}")
+                            else:
+                                dual_log(
+                                    f"[{frame_count / fps:6.2f}s] ❌ REJECTED | Skel: {skel_conf:.2f} | Rej: {reject_score:.2f}")
+
+                    # Clip writing
+                    if is_backhand and frames_to_record <= 0:
+                        clip_count += 1
+                        clip_path = os.path.join(output_dir, f"backhand_{clip_count}.mp4")
+                        dual_log(f"📹 Creating clip {clip_count}")
+
+                        current_writer = cv2.VideoWriter(
+                            clip_path,
+                            cv2.VideoWriter_fourcc(*"mp4v"),
+                            fps,
+                            (width, height)
+                        )
+
+                        if not current_writer.isOpened():
+                            dual_log(f"❌ Video writer failed")
+                            current_writer = None
+                            continue
+
+                        for f in frame_buffer:
+                            current_writer.write(f)
+
+                        frames_to_record = int(fps * 1.5)
+                        cooldown_frames = fps * 2
+                        clip_paths.append(clip_path)
 
                 except Exception as e:
-                    dual_log(f"❌ Error processing frame {frame_count}: {str(e)}")
-                    import traceback
-                    dual_log(traceback.format_exc())
-                    # Continue to next frame instead of crashing
+                    dual_log(f"❌ Frame {frame_count} error: {str(e)}")
                     continue
 
             dual_log("=" * 50)
-            dual_log(f"🏁 Finished processing all {frame_count} frames")
+            dual_log(f"🏁 Processed {frame_count} frames")
 
-    except KeyboardInterrupt:
-        dual_log("⚠️ Processing interrupted by user")
     except Exception as e:
-        dual_log(f"❌ FATAL ERROR during processing: {str(e)}")
+        dual_log(f"❌ FATAL: {str(e)}")
         import traceback
         dual_log(traceback.format_exc())
         raise
 
     finally:
-        dual_log("🧹 Cleaning up resources...")
+        dual_log("🧹 Cleanup...")
         if current_writer is not None:
             current_writer.release()
-            dual_log("✅ Video writer released")
         cap.release()
-        dual_log("✅ Video capture released")
-        dual_log("=" * 50)
-        dual_log(f"✅ Processing complete! Found {len(clip_paths)} backhand(s)")
-        dual_log("=" * 50)
+        dual_log(f"✅ Done! {len(clip_paths)} backhands")
 
     return clip_paths
