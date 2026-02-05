@@ -17,7 +17,7 @@ def detect_backhands(
     import os
     from collections import deque
     from mediapipe.tasks import python
-    from mediapipe.tasks.python.core import base_options as base_options_module
+
 
     # ----------------------------
     # Load models
@@ -56,7 +56,7 @@ def detect_backhands(
     # ----------------------------
     base_options = python.BaseOptions(
         model_asset_path=MODEL_ASSET_PATH,
-        delegate=base_options_module.Delegate.CPU
+        delegate=python.BaseOptions.Delegate.CPU
     )
 
     options = mp.tasks.vision.PoseLandmarkerOptions(
