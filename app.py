@@ -28,6 +28,24 @@ if 'processing' not in st.session_state:
 if 'clips' not in st.session_state:
     st.session_state.clips = []
 
+# Add debug log viewer in sidebar
+with st.sidebar:
+    st.header("Debug")
+    if st.button("🔍 View Debug Log"):
+        log_path = "detector_debug.log"
+        if os.path.exists(log_path):
+            with open(log_path, "r") as f:
+                log_content = f.read()
+            st.text_area("Debug Log", log_content, height=400)
+        else:
+            st.info("No debug log found yet. Run detection first.")
+
+    if st.button("🗑️ Clear Debug Log"):
+        log_path = "detector_debug.log"
+        if os.path.exists(log_path):
+            os.remove(log_path)
+            st.success("Debug log cleared!")
+
 # -----------------------
 # File upload
 # -----------------------
@@ -95,6 +113,15 @@ if uploaded_file:
                 import traceback
 
                 st.code(traceback.format_exc())
+
+            # Auto-show debug log on error
+            st.subheader("🔍 Debug Log (Last 50 lines)")
+            log_path = "detector_debug.log"
+            if os.path.exists(log_path):
+                with open(log_path, "r") as f:
+                    all_lines = f.readlines()
+                    last_lines = all_lines[-50:]
+                st.code("".join(last_lines), language="text")
 
         finally:
             # Cleanup temporary file
