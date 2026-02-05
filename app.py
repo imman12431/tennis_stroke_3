@@ -4,8 +4,10 @@ import tempfile
 import threading
 import queue
 
+from streamlit_autorefresh import st_autorefresh
+
 # --------------------------------------------------
-# TensorFlow env (must be before TF imports)
+# TensorFlow env
 # --------------------------------------------------
 os.environ['GLOG_minloglevel'] = '2'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -31,6 +33,14 @@ if "log_queue" not in st.session_state:
     st.session_state.log_queue = queue.Queue()
 if "worker" not in st.session_state:
     st.session_state.worker = None
+if "logs" not in st.session_state:
+    st.session_state.logs = []
+
+# --------------------------------------------------
+# Auto-refresh ONLY while processing
+# --------------------------------------------------
+if st.session_state.processing:
+    st_autorefresh(interval=1000, key="log_refresh")
 
 # --------------------------------------------------
 # UI
@@ -41,14 +51,11 @@ st.markdown(
     "detect and extract **backhand strokes**."
 )
 
-st.info("💡 Videos are processed in batches to handle memory efficiently.")
-
-# Processing banner
 if st.session_state.processing:
     st.info("⏳ Processing video… please wait. Do not refresh the page.")
 
 # --------------------------------------------------
-# Sidebar debug
+# Sidebar
 # --------------------------------------------------
 with st.sidebar:
     st.header("Debug")
@@ -84,7 +91,7 @@ def worker_fn(video_path, output_dir, log_queue):
     log_queue.put(("__DONE__", clips))
 
 # --------------------------------------------------
-# Main logic
+# Start job
 # --------------------------------------------------
 if uploaded_file and not st.session_state.processing:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
@@ -96,6 +103,7 @@ if uploaded_file and not st.session_state.processing:
     if st.button("▶️ Run Backhand Detection"):
         st.session_state.processing = True
         st.session_state.clips = []
+        st.session_state.logs.clear()
 
         output_dir = "data/outputs"
         os.makedirs(output_dir, exist_ok=True)
@@ -108,11 +116,8 @@ if uploaded_file and not st.session_state.processing:
         st.session_state.worker.start()
 
 # --------------------------------------------------
-# Live log display
+# Drain log queue on EVERY rerun
 # --------------------------------------------------
-log_area = st.empty()
-logs = []
-
 while not st.session_state.log_queue.empty():
     item = st.session_state.log_queue.get()
 
@@ -120,10 +125,14 @@ while not st.session_state.log_queue.empty():
         st.session_state.clips = item[1]
         st.session_state.processing = False
     else:
-        logs.append(item)
+        st.session_state.logs.append(item)
 
-if logs:
-    log_area.code("\n".join(logs[-20:]), language="text")
+# --------------------------------------------------
+# Log display
+# --------------------------------------------------
+if st.session_state.logs:
+    st.subheader("Processing Log")
+    st.code("\n".join(st.session_state.logs[-20:]), language="text")
 
 # --------------------------------------------------
 # Results
