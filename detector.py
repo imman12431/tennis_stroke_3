@@ -5,12 +5,11 @@ def detect_backhands(
 ):
     """
     Runs backhand detection on a video in batches to avoid memory issues.
-    Logs only ACCEPTED / REJECTED backhands.
-    Returns a list of output clip paths.
+    Logs progress and returns a list of output clip paths.
     """
 
     # ----------------------------
-    # Imports & env
+    # Environment + imports
     # ----------------------------
     import os
     os.environ['GLOG_minloglevel'] = '2'
@@ -26,23 +25,25 @@ def detect_backhands(
     import gc
     from datetime import datetime
     import psutil
+    import subprocess
 
+    # 🔒 Force CPU only
     tf.config.set_visible_devices([], 'GPU')
 
-    # ----------------------------
-    # Logging
-    # ----------------------------
     log_file_path = "detector_debug.log"
     process = psutil.Process()
 
+    # ----------------------------
+    # Logging helper
+    # ----------------------------
     def dual_log(msg):
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         mem_mb = process.memory_info().rss / 1024 / 1024
-        line = f"[{timestamp}] [MEM: {mem_mb:.1f}MB] {msg}"
+        log_msg = f"[{timestamp}] [MEM: {mem_mb:.1f}MB] {msg}"
 
         try:
             with open(log_file_path, "a") as f:
-                f.write(line + "\n")
+                f.write(log_msg + "\n")
         except:
             pass
 
@@ -50,6 +51,36 @@ def detect_backhands(
             log_callback(msg)
         except:
             pass
+
+    # ----------------------------
+    # 🔑 H.264 re-encode helper
+    # ----------------------------
+    def reencode_h264(path):
+        tmp = path.replace(".mp4", "_h264.mp4")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", path,
+            "-movflags", "faststart",
+            "-pix_fmt", "yuv420p",
+            "-vcodec", "libx264",
+            "-profile:v", "main",
+            "-level", "3.1",
+            tmp
+        ]
+
+        try:
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True
+            )
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return False
 
     dual_log("🚀 Starting backhand detection (BATCH MODE)")
 
@@ -71,12 +102,11 @@ def detect_backhands(
     num_batches = (total_frames + batch_size - 1) // batch_size
 
     os.makedirs(output_dir, exist_ok=True)
-
     all_clip_paths = []
     global_clip_count = 0
 
     # ----------------------------
-    # Models
+    # Load models
     # ----------------------------
     keras_model = tf.keras.models.load_model(
         "models/tennis_stroke/tennis_model_keras", compile=False
@@ -87,7 +117,7 @@ def detect_backhands(
     le = joblib.load("models/tennis_stroke/label_encoder_keras.pkl")
 
     # ----------------------------
-    # MediaPipe
+    # MediaPipe setup (unchanged)
     # ----------------------------
     base_options = python.BaseOptions(
         model_asset_path="pose_landmarker_heavy.task",
@@ -100,25 +130,6 @@ def detect_backhands(
     )
 
     landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(options)
-
-    # ----------------------------
-    # ✅ Browser-safe VideoWriter
-    # ----------------------------
-    def open_video_writer(path):
-        # Try H.264 first (browser compatible)
-        for codec in ("avc1", "mp4v"):
-            fourcc = cv2.VideoWriter_fourcc(*codec)
-            writer = cv2.VideoWriter(
-                path,
-                fourcc,
-                fps,
-                (width, height)
-            )
-            if writer.isOpened():
-                dual_log(f"🎞️ VideoWriter opened with codec: {codec}")
-                return writer
-        dual_log("❌ Failed to open VideoWriter")
-        return None
 
     # ----------------------------
     # Batch processing
@@ -164,10 +175,13 @@ def detect_backhands(
             if frames_to_record > 0:
                 current_writer.write(frame)
                 frames_to_record -= 1
+
                 if frames_to_record == 0:
                     current_writer.release()
+                    reencode_h264(clip_path)  # 🔑 FIX
                     current_writer = None
                     stroke_active = False
+
                 continue
 
             mp_image = mp.Image(
@@ -210,9 +224,12 @@ def detect_backhands(
                             output_dir, f"backhand_{global_clip_count}.mp4"
                         )
 
-                        current_writer = open_video_writer(clip_path)
-                        if current_writer is None:
-                            continue
+                        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                        current_writer = cv2.VideoWriter(
+                            clip_path, fourcc, fps, (width, height)
+                        )
+
+                        dual_log("🎞️ VideoWriter opened with codec: mp4v")
 
                         for f in frame_buffer:
                             current_writer.write(f)
