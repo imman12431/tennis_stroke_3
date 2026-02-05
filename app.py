@@ -1,5 +1,6 @@
 import os
 import time
+import tempfile
 
 # --------------------------------------------------
 # Configure TensorFlow BEFORE any imports that use it
@@ -16,23 +17,16 @@ st.set_page_config(
     layout="wide"
 )
 
-import tempfile
 from detector import detect_backhands
 
 # --------------------------------------------------
 # Session state
 # --------------------------------------------------
-if 'processing' not in st.session_state:
+if "processing" not in st.session_state:
     st.session_state.processing = False
-if 'clips' not in st.session_state:
-    st.session_state.clips = []
 
-# --------------------------------------------------
-# 🔒 HARD LOCK: prevent Streamlit reruns mid-processing
-# --------------------------------------------------
-if st.session_state.processing:
-    st.warning("⏳ Processing video… please wait.")
-    st.stop()
+if "clips" not in st.session_state:
+    st.session_state.clips = []
 
 # --------------------------------------------------
 # UI
@@ -43,10 +37,14 @@ st.markdown(
     "detect and extract **backhand strokes**."
 )
 
-st.info("💡 Videos are processed in 15-second batches to handle memory efficiently.")
+st.info("💡 Videos are processed in batches to handle memory efficiently.")
+
+# Soft status banner (DO NOT block rendering)
+if st.session_state.processing:
+    st.info("⏳ Processing video… please wait. Do not refresh the page.")
 
 # --------------------------------------------------
-# Sidebar debug tools (DISABLED while running)
+# Sidebar debug tools
 # --------------------------------------------------
 with st.sidebar:
     st.header("Debug")
@@ -81,7 +79,15 @@ if uploaded_file:
 
     st.video(video_path)
 
-    if st.button("▶️ Run Backhand Detection", disabled=st.session_state.processing):
+    # --------------------------------------------------
+    # Run button (safe against reruns)
+    # --------------------------------------------------
+    run_clicked = st.button(
+        "▶️ Run Backhand Detection",
+        disabled=st.session_state.processing
+    )
+
+    if run_clicked and not st.session_state.processing:
         st.session_state.processing = True
         st.session_state.clips = []
 
@@ -93,9 +99,7 @@ if uploaded_file:
         log_area = st.empty()
         logs = []
 
-        # --------------------------------------------------
-        # ⏱️ Throttled Streamlit logger
-        # --------------------------------------------------
+        # Throttled logger (prevents Streamlit overload)
         last_log_time = [0.0]
 
         def streamlit_logger(msg):
@@ -131,7 +135,6 @@ if uploaded_file:
                 import traceback
                 st.code(traceback.format_exc())
 
-            # Auto-show debug log
             log_path = "detector_debug.log"
             if os.path.exists(log_path):
                 with open(log_path, "r") as f:
@@ -149,7 +152,7 @@ if uploaded_file:
             st.session_state.processing = False
 
 # --------------------------------------------------
-# Show previously detected clips
+# Show previous results
 # --------------------------------------------------
 elif st.session_state.clips:
     st.success(f"✅ Previously detected {len(st.session_state.clips)} backhand(s)")
