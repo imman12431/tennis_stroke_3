@@ -24,14 +24,23 @@ def detect_backhands(
     import gc
     import sys
     from datetime import datetime
+    import psutil  # For memory monitoring
 
     # Create log file
     log_file_path = "detector_debug.log"
 
+    # Get current process
+    process = psutil.Process()
+
     def dual_log(msg):
-        """Log to both callback and file"""
+        """Log to both callback and file with memory info"""
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_msg = f"[{timestamp}] {msg}"
+
+        # Get memory usage
+        mem_info = process.memory_info()
+        mem_mb = mem_info.rss / 1024 / 1024  # Convert to MB
+
+        log_msg = f"[{timestamp}] [MEM: {mem_mb:.1f}MB] {msg}"
 
         try:
             with open(log_file_path, "a") as f:
@@ -68,8 +77,8 @@ def detect_backhands(
 
     dual_log(f"📹 Video: {width}x{height} @ {fps}fps | {total_frames} frames ({duration:.1f}s)")
 
-    # Calculate batch size (process 15 seconds at a time)
-    BATCH_DURATION = 15  # seconds
+    # Calculate batch size (process 10 seconds at a time - smaller batches)
+    BATCH_DURATION = 10  # Reduced from 15 to 10
     batch_size = fps * BATCH_DURATION
     num_batches = (total_frames + batch_size - 1) // batch_size
 
@@ -90,7 +99,11 @@ def detect_backhands(
     try:
         dual_log("🔄 Loading models...")
         keras_model = tf.keras.models.load_model(KERAS_MODEL_PATH, compile=False)
+        dual_log("✅ Skeleton model loaded")
+
         rejector = tf.keras.models.load_model(REJECTOR_MODEL_PATH, compile=False)
+        dual_log("✅ Rejector model loaded")
+
         le = joblib.load(ENCODER_PATH)
         dual_log("✅ All models loaded")
     except Exception as e:
@@ -127,6 +140,11 @@ def detect_backhands(
         dual_log(f"   Frames {start_frame} to {end_frame}")
         dual_log("=" * 50)
 
+        # Check memory before starting batch
+        mem_info = process.memory_info()
+        mem_mb = mem_info.rss / 1024 / 1024
+        dual_log(f"💾 Memory before batch: {mem_mb:.1f}MB")
+
         # Open video for this batch
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -141,6 +159,7 @@ def detect_backhands(
                 cooldown_frames = 0
                 stroke_active = False
                 last_progress_log = 0
+                last_mem_check = 0
 
                 while frame_count < end_frame:
                     try:
@@ -155,7 +174,7 @@ def detect_backhands(
                         if not stroke_active and cooldown_frames == 0:
                             frame_buffer.append(frame.copy())
 
-                        # Progress logging
+                        # Progress logging every 2 seconds
                         current_time = frame_count / fps
                         if current_time - last_progress_log >= 2.0:
                             batch_progress = ((frame_count - start_frame) / (end_frame - start_frame)) * 100
@@ -163,6 +182,19 @@ def detect_backhands(
                             dual_log(
                                 f"⏳ Batch: {batch_progress:.1f}% | Overall: {overall_progress:.1f}% | {global_clip_count} clips")
                             last_progress_log = current_time
+
+                        # Memory check every 5 seconds
+                        if current_time - last_mem_check >= 5.0:
+                            mem_info = process.memory_info()
+                            mem_mb = mem_info.rss / 1024 / 1024
+                            dual_log(f"💾 Current memory: {mem_mb:.1f}MB")
+
+                            # Warning if approaching 1GB limit
+                            if mem_mb > 800:
+                                dual_log(f"⚠️ WARNING: High memory usage ({mem_mb:.1f}MB)")
+
+                            last_mem_check = current_time
+                            gc.collect()
 
                         if cooldown_frames > 0:
                             cooldown_frames -= 1
@@ -179,6 +211,7 @@ def detect_backhands(
                                     current_writer = None
                                 stroke_active = False
                                 dual_log(f"✅ Clip {global_clip_count} saved")
+                                gc.collect()
                             continue
 
                         # MediaPipe processing
@@ -225,9 +258,6 @@ def detect_backhands(
                                     stroke_active = True
                                     dual_log(
                                         f"[{frame_count / fps:6.2f}s] ✅ BACKHAND | Skel: {skel_conf:.2f} | Rej: {reject_score:.2f}")
-                                else:
-                                    dual_log(
-                                        f"[{frame_count / fps:6.2f}s] ❌ REJECTED | Skel: {skel_conf:.2f} | Rej: {reject_score:.2f}")
 
                         # Clip writing
                         if is_backhand and frames_to_record <= 0:
@@ -262,6 +292,8 @@ def detect_backhands(
 
         except Exception as e:
             dual_log(f"❌ Batch {batch_num + 1} error: {str(e)}")
+            import traceback
+            dual_log(traceback.format_exc())
 
         finally:
             if current_writer is not None:
@@ -270,7 +302,16 @@ def detect_backhands(
 
             # Aggressive cleanup between batches
             del frame_buffer
+            if 'mp_image' in locals():
+                del mp_image
+            if 'frame' in locals():
+                del frame
             gc.collect()
+
+            # Check memory after cleanup
+            mem_info = process.memory_info()
+            mem_mb = mem_info.rss / 1024 / 1024
+            dual_log(f"💾 Memory after batch cleanup: {mem_mb:.1f}MB")
             dual_log(f"🧹 Batch {batch_num + 1} resources released")
 
     dual_log("=" * 50)
