@@ -1,11 +1,15 @@
 import streamlit as st
+import os
+
+# Suppress warnings before other imports
+os.environ['GLOG_minloglevel'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 st.set_page_config(
     page_title="Tennis Backhand Detector",
     layout="wide"
 )
 
-import os
 import tempfile
 from detector import detect_backhands
 
@@ -15,12 +19,19 @@ st.markdown(
     "detect and extract **backhand strokes**."
 )
 
+# Initialize session state
+if 'processing' not in st.session_state:
+    st.session_state.processing = False
+if 'clips' not in st.session_state:
+    st.session_state.clips = []
+
 # -----------------------
 # File upload
 # -----------------------
 uploaded_file = st.file_uploader(
     "Upload a video file",
-    type=["mp4", "mov", "avi"]
+    type=["mp4", "mov", "avi"],
+    disabled=st.session_state.processing
 )
 
 if uploaded_file:
@@ -30,43 +41,27 @@ if uploaded_file:
 
     st.video(video_path)
 
-    if st.button("▶️ Run Backhand Detection"):
+    if st.button("▶️ Run Backhand Detection", disabled=st.session_state.processing):
+        st.session_state.processing = True
+        st.session_state.clips = []
+
         output_dir = "data/outputs"
         os.makedirs(output_dir, exist_ok=True)
 
-        log_area = st.empty()
+        # Create placeholder for logs
+        log_container = st.container()
+        with log_container:
+            st.subheader("Processing Log")
+            log_area = st.empty()
+
         logs = []
 
 
         def streamlit_logger(msg):
             logs.append(msg)
-            log_area.code("\n".join(logs[-12:]))
+            # Show last 15 lines
+            log_area.code("\n".join(logs[-15:]), language="text")
 
 
         try:
-            with st.spinner("Analyzing video..."):
-                clips = detect_backhands(
-                    video_path=video_path,
-                    output_dir=output_dir,
-                    log_callback=streamlit_logger
-                )
-
-            st.success(f"Detected {len(clips)} backhand(s)!")
-
-            if clips:
-                for i, clip in enumerate(clips, 1):
-                    st.subheader(f"Backhand {i}")
-                    st.video(clip)
-            else:
-                st.info("No backhands detected in this video.")
-
-        except Exception as e:
-            st.error(f"Error during detection: {str(e)}")
-            import traceback
-
-            st.code(traceback.format_exc())
-
-        finally:
-            # Cleanup temporary file
-            if os.path.exists(video_path):
-                os.unlink(video_path)
+            with st.spinner("Analyzing vide
