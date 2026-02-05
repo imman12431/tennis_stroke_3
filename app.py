@@ -1,6 +1,9 @@
 import os
+import time
 
+# --------------------------------------------------
 # Configure TensorFlow BEFORE any imports that use it
+# --------------------------------------------------
 os.environ['GLOG_minloglevel'] = '2'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
@@ -16,41 +19,55 @@ st.set_page_config(
 import tempfile
 from detector import detect_backhands
 
+# --------------------------------------------------
+# Session state
+# --------------------------------------------------
+if 'processing' not in st.session_state:
+    st.session_state.processing = False
+if 'clips' not in st.session_state:
+    st.session_state.clips = []
+
+# --------------------------------------------------
+# 🔒 HARD LOCK: prevent Streamlit reruns mid-processing
+# --------------------------------------------------
+if st.session_state.processing:
+    st.warning("⏳ Processing video… please wait.")
+    st.stop()
+
+# --------------------------------------------------
+# UI
+# --------------------------------------------------
 st.title("🎾 Tennis Backhand Detection Demo")
 st.markdown(
     "Upload a tennis match video. The model will automatically "
     "detect and extract **backhand strokes**."
 )
 
-st.info("💡 Videos are processed in 15-second batches to handle memory efficiently on cloud.")
+st.info("💡 Videos are processed in 15-second batches to handle memory efficiently.")
 
-# Initialize session state
-if 'processing' not in st.session_state:
-    st.session_state.processing = False
-if 'clips' not in st.session_state:
-    st.session_state.clips = []
-
-# Add debug log viewer in sidebar
+# --------------------------------------------------
+# Sidebar debug tools (DISABLED while running)
+# --------------------------------------------------
 with st.sidebar:
     st.header("Debug")
-    if st.button("🔍 View Debug Log"):
+
+    if st.button("🔍 View Debug Log", disabled=st.session_state.processing):
         log_path = "detector_debug.log"
         if os.path.exists(log_path):
             with open(log_path, "r") as f:
-                log_content = f.read()
-            st.text_area("Debug Log", log_content, height=400)
+                st.text_area("Debug Log", f.read(), height=400)
         else:
-            st.info("No debug log found yet. Run detection first.")
+            st.info("No debug log found yet.")
 
-    if st.button("🗑️ Clear Debug Log"):
+    if st.button("🗑️ Clear Debug Log", disabled=st.session_state.processing):
         log_path = "detector_debug.log"
         if os.path.exists(log_path):
             os.remove(log_path)
             st.success("Debug log cleared!")
 
-# -----------------------
+# --------------------------------------------------
 # File upload
-# -----------------------
+# --------------------------------------------------
 uploaded_file = st.file_uploader(
     "Upload a video file",
     type=["mp4", "mov", "avi"],
@@ -71,20 +88,22 @@ if uploaded_file:
         output_dir = "data/outputs"
         os.makedirs(output_dir, exist_ok=True)
 
-        # Create placeholder for logs
-        log_container = st.container()
-        with log_container:
-            st.subheader("Processing Log")
-            log_area = st.empty()
-
+        # Log UI
+        st.subheader("Processing Log")
+        log_area = st.empty()
         logs = []
 
+        # --------------------------------------------------
+        # ⏱️ Throttled Streamlit logger
+        # --------------------------------------------------
+        last_log_time = [0.0]
 
         def streamlit_logger(msg):
             logs.append(msg)
-            # Show last 15 lines
-            log_area.code("\n".join(logs[-15:]), language="text")
-
+            now = time.time()
+            if now - last_log_time[0] > 1.5:
+                log_area.code("\n".join(logs[-15:]), language="text")
+                last_log_time[0] = now
 
         try:
             with st.spinner("Analyzing video in batches..."):
@@ -95,8 +114,6 @@ if uploaded_file:
                 )
 
             st.session_state.clips = clips
-            st.session_state.processing = False
-
             st.success(f"✅ Detected {len(clips)} backhand(s)!")
 
             if clips:
@@ -108,25 +125,21 @@ if uploaded_file:
                 st.info("No backhands detected in this video.")
 
         except Exception as e:
-            st.session_state.processing = False
             st.error(f"❌ Error during detection: {str(e)}")
 
             with st.expander("Error Details"):
                 import traceback
-
                 st.code(traceback.format_exc())
 
-            # Auto-show debug log on error
-            st.subheader("🔍 Debug Log (Last 50 lines)")
+            # Auto-show debug log
             log_path = "detector_debug.log"
             if os.path.exists(log_path):
                 with open(log_path, "r") as f:
-                    all_lines = f.readlines()
-                    last_lines = all_lines[-50:]
-                st.code("".join(last_lines), language="text")
+                    st.subheader("🔍 Debug Log (Last 50 lines)")
+                    st.code("".join(f.readlines()[-50:]), language="text")
 
         finally:
-            # Cleanup temporary file
+            # Cleanup temp file
             try:
                 if os.path.exists(video_path):
                     os.unlink(video_path)
@@ -135,12 +148,14 @@ if uploaded_file:
 
             st.session_state.processing = False
 
-# Show previously detected clips if they exist
+# --------------------------------------------------
+# Show previously detected clips
+# --------------------------------------------------
 elif st.session_state.clips:
     st.success(f"✅ Previously detected {len(st.session_state.clips)} backhand(s)")
     st.subheader("Detected Backhands")
     for i, clip in enumerate(st.session_state.clips, 1):
-        with st.expander(f"🎾 Backhand {i}", expanded=False):
+        with st.expander(f"🎾 Backhand {i}"):
             if os.path.exists(clip):
                 st.video(clip)
             else:
