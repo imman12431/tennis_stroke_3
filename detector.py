@@ -5,7 +5,7 @@ def detect_backhands(
 ):
     """
     Batch-based tennis backhand detection.
-    Writes browser-playable H.264 MP4 clips.
+    Writes browser-playable H.264 MP4 clips (OpenCV avc1).
     Returns list of absolute clip paths.
     """
 
@@ -26,9 +26,8 @@ def detect_backhands(
     from collections import deque
     from mediapipe.tasks import python
     from datetime import datetime
-    import imageio.v2 as imageio
 
-    tf.config.set_visible_devices([], "GPU")  # CPU-only (Streamlit-safe)
+    tf.config.set_visible_devices([], "GPU")  # CPU-only
 
     process = psutil.Process()
     log_file_path = "detector_debug.log"
@@ -88,8 +87,7 @@ def detect_backhands(
     # MediaPipe
     # ----------------------------
     base_options = python.BaseOptions(
-        model_asset_path="pose_landmarker_heavy.task",
-        delegate=python.BaseOptions.Delegate.CPU
+        model_asset_path="pose_landmarker_heavy.task"
     )
 
     options = mp.tasks.vision.PoseLandmarkerOptions(
@@ -100,20 +98,23 @@ def detect_backhands(
     landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(options)
 
     # ----------------------------
-    # Video writer helper
+    # Video writer helper (FIXED)
     # ----------------------------
     def write_mp4_h264(path, frames, fps):
-        writer = imageio.get_writer(
-            path,
-            format="ffmpeg",
-            mode="I",
-            fps=fps,
-            codec="libx264",
-            pixelformat="yuv420p"
-        )
+        if not frames:
+            return
+
+        h, w, _ = frames[0].shape
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")
+        writer = cv2.VideoWriter(path, fourcc, fps, (w, h))
+
+        if not writer.isOpened():
+            raise RuntimeError(f"Failed to open VideoWriter: {path}")
+
         for f in frames:
-            writer.append_data(f[:, :, ::-1])  # BGR → RGB
-        writer.close()
+            writer.write(f)
+
+        writer.release()
 
     # ----------------------------
     # Detection loop
@@ -223,6 +224,15 @@ def detect_backhands(
                         dual_log(f"🎾 BACKHAND accepted #{global_clip_count}")
 
             gc.collect()
+
+        # ----------------------------
+        # ✅ FLUSH CLIP AT BATCH END
+        # ----------------------------
+        if stroke_active and current_clip_frames:
+            write_mp4_h264(clip_path, current_clip_frames, fps)
+            stroke_active = False
+            current_clip_frames = []
+            dual_log("🧹 Flushed clip at batch end")
 
         cap.release()
         gc.collect()
