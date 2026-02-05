@@ -98,18 +98,23 @@ def detect_backhands(
     # ----------------------------
     # H.264 writer helper
     # ----------------------------
+    import imageio.v2 as imageio
+
     def write_mp4_h264(path, frames, fps):
-        writer = iio.get_writer(
+        writer = imageio.get_writer(
             path,
+            format="ffmpeg",
+            mode="I",
             fps=fps,
             codec="libx264",
             pixelformat="yuv420p"
         )
-        try:
-            for f in frames:
-                writer.append_data(f[:, :, ::-1])  # BGR → RGB
-        finally:
-            writer.close()
+
+        for frame in frames:
+            # OpenCV → RGB
+            writer.append_data(frame[:, :, ::-1])
+
+        writer.close()
 
     # ----------------------------
     # Batch config
