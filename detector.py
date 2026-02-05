@@ -5,17 +5,11 @@ def detect_backhands(
 ):
     """
     Batch-based tennis backhand detection.
-    Writes browser-playable H.264 MP4 clips (OpenCV avc1).
+    Writes browser-playable H.264 MP4 clips.
     Returns list of absolute clip paths.
     """
 
-    # ----------------------------
-    # Imports & env
-    # ----------------------------
     import os
-    os.environ["GLOG_minloglevel"] = "2"
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
     import cv2
     import gc
     import numpy as np
@@ -26,15 +20,15 @@ def detect_backhands(
     from collections import deque
     from mediapipe.tasks import python
     from datetime import datetime
+    import imageio.v2 as imageio
 
-    tf.config.set_visible_devices([], "GPU")  # CPU-only
+    os.environ["GLOG_minloglevel"] = "2"
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+    tf.config.set_visible_devices([], "GPU")
 
     process = psutil.Process()
     log_file_path = "detector_debug.log"
 
-    # ----------------------------
-    # Logging
-    # ----------------------------
     def dual_log(msg):
         ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         mem = process.memory_info().rss / 1024 / 1024
@@ -53,9 +47,6 @@ def detect_backhands(
 
     dual_log("🚀 Starting backhand detection (BATCH MODE)")
 
-    # ----------------------------
-    # Video metadata
-    # ----------------------------
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Could not open video")
@@ -72,9 +63,6 @@ def detect_backhands(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # ----------------------------
-    # Load models
-    # ----------------------------
     keras_model = tf.keras.models.load_model(
         "models/tennis_stroke/tennis_model_keras", compile=False
     )
@@ -83,11 +71,9 @@ def detect_backhands(
     )
     le = joblib.load("models/tennis_stroke/label_encoder_keras.pkl")
 
-    # ----------------------------
-    # MediaPipe
-    # ----------------------------
     base_options = python.BaseOptions(
-        model_asset_path="pose_landmarker_heavy.task"
+        model_asset_path="pose_landmarker_heavy.task",
+        delegate=python.BaseOptions.Delegate.CPU
     )
 
     options = mp.tasks.vision.PoseLandmarkerOptions(
@@ -97,28 +83,18 @@ def detect_backhands(
 
     landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(options)
 
-    # ----------------------------
-    # Video writer helper (FIXED)
-    # ----------------------------
     def write_mp4_h264(path, frames, fps):
-        if not frames:
-            return
-
-        h, w, _ = frames[0].shape
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")
-        writer = cv2.VideoWriter(path, fourcc, fps, (w, h))
-
-        if not writer.isOpened():
-            raise RuntimeError(f"Failed to open VideoWriter: {path}")
-
+        writer = imageio.get_writer(
+            path,
+            format="ffmpeg",
+            fps=fps,
+            codec="libx264",
+            pixelformat="yuv420p"
+        )
         for f in frames:
-            writer.write(f)
+            writer.append_data(f[:, :, ::-1])
+        writer.close()
 
-        writer.release()
-
-    # ----------------------------
-    # Detection loop
-    # ----------------------------
     all_clip_paths = []
     global_clip_count = 0
 
@@ -133,6 +109,7 @@ def detect_backhands(
 
         frame_buffer = deque(maxlen=int(fps * 0.7))
         current_clip_frames = []
+        clip_path = None  # ← FIX 1
 
         frames_to_record = 0
         cooldown_frames = 0
@@ -160,9 +137,6 @@ def detect_backhands(
             if cooldown_frames > 0:
                 cooldown_frames -= 1
 
-            # ----------------------------
-            # Recording clip frames
-            # ----------------------------
             if frames_to_record > 0:
                 current_clip_frames.append(frame)
                 frames_to_record -= 1
@@ -171,11 +145,9 @@ def detect_backhands(
                     write_mp4_h264(clip_path, current_clip_frames, fps)
                     stroke_active = False
                     current_clip_frames = []
+                    clip_path = None
                 continue
 
-            # ----------------------------
-            # Pose detection
-            # ----------------------------
             mp_image = mp.Image(
                 image_format=mp.ImageFormat.SRGB,
                 data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -226,13 +198,11 @@ def detect_backhands(
             gc.collect()
 
         # ----------------------------
-        # ✅ FLUSH CLIP AT BATCH END
+        # FIX 2: flush unfinished clip
         # ----------------------------
-        if stroke_active and current_clip_frames:
+        if stroke_active and current_clip_frames and clip_path:
             write_mp4_h264(clip_path, current_clip_frames, fps)
-            stroke_active = False
-            current_clip_frames = []
-            dual_log("🧹 Flushed clip at batch end")
+            dual_log("⚠️ Flushed incomplete final clip")
 
         cap.release()
         gc.collect()
