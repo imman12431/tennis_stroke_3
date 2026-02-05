@@ -9,7 +9,9 @@ def detect_backhands(
     Returns a list of output clip paths.
     """
 
-    # Suppress warnings
+    # ----------------------------
+    # Imports & env
+    # ----------------------------
     import os
     os.environ['GLOG_minloglevel'] = '2'
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -22,24 +24,25 @@ def detect_backhands(
     from collections import deque
     from mediapipe.tasks import python
     import gc
-    import sys
     from datetime import datetime
     import psutil
 
-    # 🔒 Force CPU only (prevents TF weirdness in Streamlit)
     tf.config.set_visible_devices([], 'GPU')
 
+    # ----------------------------
+    # Logging
+    # ----------------------------
     log_file_path = "detector_debug.log"
     process = psutil.Process()
 
     def dual_log(msg):
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         mem_mb = process.memory_info().rss / 1024 / 1024
-        log_msg = f"[{timestamp}] [MEM: {mem_mb:.1f}MB] {msg}"
+        line = f"[{timestamp}] [MEM: {mem_mb:.1f}MB] {msg}"
 
         try:
             with open(log_file_path, "a") as f:
-                f.write(log_msg + "\n")
+                f.write(line + "\n")
         except:
             pass
 
@@ -68,11 +71,12 @@ def detect_backhands(
     num_batches = (total_frames + batch_size - 1) // batch_size
 
     os.makedirs(output_dir, exist_ok=True)
+
     all_clip_paths = []
     global_clip_count = 0
 
     # ----------------------------
-    # Load models
+    # Models
     # ----------------------------
     keras_model = tf.keras.models.load_model(
         "models/tennis_stroke/tennis_model_keras", compile=False
@@ -83,11 +87,11 @@ def detect_backhands(
     le = joblib.load("models/tennis_stroke/label_encoder_keras.pkl")
 
     # ----------------------------
-    # MediaPipe setup (UNCHANGED)
+    # MediaPipe
     # ----------------------------
     base_options = python.BaseOptions(
         model_asset_path="pose_landmarker_heavy.task",
-        delegate=python.BaseOptions.Delegate.CPU  # ← unchanged per your request
+        delegate=python.BaseOptions.Delegate.CPU
     )
 
     options = mp.tasks.vision.PoseLandmarkerOptions(
@@ -95,8 +99,26 @@ def detect_backhands(
         running_mode=mp.tasks.vision.RunningMode.VIDEO
     )
 
-    # ✅ CREATE LANDMARKER ONCE
     landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(options)
+
+    # ----------------------------
+    # ✅ Browser-safe VideoWriter
+    # ----------------------------
+    def open_video_writer(path):
+        # Try H.264 first (browser compatible)
+        for codec in ("avc1", "mp4v"):
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            writer = cv2.VideoWriter(
+                path,
+                fourcc,
+                fps,
+                (width, height)
+            )
+            if writer.isOpened():
+                dual_log(f"🎞️ VideoWriter opened with codec: {codec}")
+                return writer
+        dual_log("❌ Failed to open VideoWriter")
+        return None
 
     # ----------------------------
     # Batch processing
@@ -110,7 +132,6 @@ def detect_backhands(
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-        # ✅ Smaller buffer = lower RAM
         frame_buffer = deque(maxlen=int(fps * 0.7))
 
         current_writer = None
@@ -131,7 +152,6 @@ def detect_backhands(
             if not stroke_active and cooldown_frames == 0:
                 frame_buffer.append(frame)
 
-            # 🧘 Slower logging (Streamlit-safe)
             if frame_count / fps - last_progress_log >= 5.0:
                 dual_log(
                     f"⏳ Progress: {(frame_count / total_frames) * 100:.1f}% | Clips: {global_clip_count}"
@@ -190,12 +210,9 @@ def detect_backhands(
                             output_dir, f"backhand_{global_clip_count}.mp4"
                         )
 
-                        current_writer = cv2.VideoWriter(
-                            clip_path,
-                            cv2.VideoWriter_fourcc(*"mp4v"),
-                            fps,
-                            (width, height)
-                        )
+                        current_writer = open_video_writer(clip_path)
+                        if current_writer is None:
+                            continue
 
                         for f in frame_buffer:
                             current_writer.write(f)
@@ -209,7 +226,6 @@ def detect_backhands(
         cap.release()
         gc.collect()
 
-    # ✅ CLOSE LANDMARKER ONCE
     landmarker.close()
 
     dual_log(f"✅ DONE — {len(all_clip_paths)} backhands detected")
