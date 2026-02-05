@@ -127,7 +127,7 @@ def detect_backhands(
                 ):
                     reject_score = rejector.predict(X, verbose=0)[0][0]
 
-                    if reject_score > 0.5:
+                    if reject_score > 0.9:
                         is_backhand = True
                         stroke_active = True
 
@@ -148,12 +148,8 @@ def detect_backhands(
                 clip_count += 1
                 clip_path = os.path.join(output_dir, f"backhand_{clip_count}.mp4")
 
-                current_writer = cv2.VideoWriter(
-                    clip_path,
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    fps,
-                    (width, height)
-                )
+                # Try 'avc1' for H.264 web-compatible video
+                current_writer = cv2.VideoWriter(clip_path, cv2.VideoWriter_fourcc(*"avc1"), fps, (width, height))
 
                 for f in frame_buffer:
                     current_writer.write(f)
