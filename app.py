@@ -22,6 +22,8 @@ st.markdown(
     "detect and extract **backhand strokes**."
 )
 
+st.info("💡 Videos are processed in 15-second batches to handle memory efficiently on cloud.")
+
 # Initialize session state
 if 'processing' not in st.session_state:
     st.session_state.processing = False
@@ -85,7 +87,7 @@ if uploaded_file:
 
 
         try:
-            with st.spinner("Analyzing video... This may take several minutes for long videos."):
+            with st.spinner("Analyzing video in batches..."):
                 clips = detect_backhands(
                     video_path=video_path,
                     output_dir=output_dir,
