@@ -159,7 +159,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     post_frames = int(fps * 1.5)
 
     # IMPORTANT: Streamlit-compatible codec
-    streamlit_fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    streamlit_fourcc = cv2.VideoWriter_fourcc(*"MJPG")
 
     for i, center_frame in enumerate(accepted_frames, 1):
         start = max(0, center_frame - pre_frames)
