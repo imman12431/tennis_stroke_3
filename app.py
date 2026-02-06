@@ -36,7 +36,7 @@ if "logs" not in st.session_state:
     st.session_state.logs = []
 
 # --------------------------------------------------
-# ffmpeg availability check (CRITICAL)
+# ffmpeg availability check
 # --------------------------------------------------
 with st.sidebar:
     st.header("Environment")
@@ -127,7 +127,15 @@ while not st.session_state.log_queue.empty():
     item = st.session_state.log_queue.get()
 
     if isinstance(item, tuple) and item[0] == "__DONE__":
-        st.session_state.clips = item[1]
+        clips = item[1]
+
+        # --- CRITICAL FIX: wait until files actually exist ---
+        for _ in range(30):  # up to ~3 seconds
+            if all(os.path.exists(p) for p in clips):
+                break
+            time.sleep(0.1)
+
+        st.session_state.clips = clips
         st.session_state.processing = False
     else:
         st.session_state.logs.append(item)
@@ -140,7 +148,7 @@ if st.session_state.logs:
     st.code("\n".join(st.session_state.logs[-20:]), language="text")
 
 # --------------------------------------------------
-# RESULTS — DIAGNOSTIC VIEW
+# RESULTS
 # --------------------------------------------------
 if not st.session_state.processing and st.session_state.clips:
     st.success(f"✅ Detected {len(st.session_state.clips)} backhand(s)!")
@@ -156,17 +164,12 @@ if not st.session_state.processing and st.session_state.clips:
                 size = os.path.getsize(clip)
                 st.write("Size (bytes):", size)
 
-                # 1️⃣ Try path-based rendering
-                st.markdown("**Path-based playback:**")
+                st.markdown("**Playback:**")
                 st.video(clip)
 
-                # 2️⃣ Try byte-based rendering
-                st.markdown("**Byte-based playback:**")
                 with open(clip, "rb") as f:
                     video_bytes = f.read()
-                st.video(video_bytes, format="video/mp4")
 
-                # 3️⃣ Download
                 st.download_button(
                     "⬇️ Download clip",
                     data=video_bytes,
