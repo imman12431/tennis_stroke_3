@@ -5,11 +5,9 @@ import numpy as np
 import tensorflow as tf
 import joblib
 from collections import deque
-from datetime import datetime
 import psutil
 from mediapipe.tasks import python
 import mediapipe as mp
-import imageio.v2 as imageio
 
 def detect_backhands(video_path, output_dir, log_callback=print):
     """
@@ -18,28 +16,6 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     Returns list of absolute clip paths.
     """
     os.makedirs(output_dir, exist_ok=True)
-    process = psutil.Process()
-
-    # ----------------------------
-    # Logging helper
-    # ----------------------------
-    log_file_path = "detector_debug.log"
-    def dual_log(msg):
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        mem = process.memory_info().rss / 1024 / 1024
-        line = f"[{ts}] [MEM {mem:.1f}MB] {msg}"
-
-        try:
-            with open(log_file_path, "a") as f:
-                f.write(line + "\n")
-        except:
-            pass
-        try:
-            log_callback(msg)
-        except:
-            pass
-
-    dual_log("🚀 Starting backhand detection (frame-by-frame)")
 
     # ----------------------------
     # Video setup
@@ -102,9 +78,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             if result.pose_landmarks and cooldown_frames == 0:
                 landmarks = result.pose_landmarks[0]
 
-                # ----------------------------
                 # Skeleton feature extraction
-                # ----------------------------
                 all_coords = np.array([(lm.x * width, lm.y * height) for lm in landmarks])
                 mid_hip = (all_coords[23] + all_coords[24]) / 2
                 shoulder_dist = np.linalg.norm(all_coords[11] - all_coords[12])
@@ -122,29 +96,20 @@ def detect_backhands(video_path, output_dir, log_callback=print):
                     ])
                 X = np.array([feats], dtype=np.float32)
 
-                # ----------------------------
                 # Skeleton model prediction
-                # ----------------------------
                 pred = keras_model.predict_on_batch(X)[0]
                 class_idx = np.argmax(pred)
                 confidence = pred[class_idx]
                 label = le.inverse_transform([class_idx])[0]
 
-                dual_log(f"[Frame {frame_count}] Skeleton → {label} ({confidence:.2f})")
-
-                # ----------------------------
                 # CNN verification
-                # ----------------------------
                 if label.lower() == "backhand" and confidence > 0.85:
                     rejector_score = rejector.predict(X, verbose=0)[0][0]
-                    dual_log(f"           Rejector → backhand prob: {rejector_score:.2f}")
                     if rejector_score > 0.9:
                         is_backhand = True
-                        dual_log(f"           ✅ ACCEPTED by rejector")
+                        log_callback(f"🎾 Backhand accepted (frame {frame_count})")
 
-            # ----------------------------
             # Clip saving
-            # ----------------------------
             if is_backhand and frames_to_record <= 0:
                 clip_count += 1
                 clip_path = os.path.abspath(os.path.join(output_dir, f"backhand_{clip_count}.mp4"))
@@ -154,7 +119,6 @@ def detect_backhands(video_path, output_dir, log_callback=print):
                 frames_to_record = int(fps * 1.5)
                 cooldown_frames = fps * 2
                 all_clip_paths.append(clip_path)
-                dual_log(f"🎬 Recording clip #{clip_count}")
 
             elif frames_to_record > 0:
                 current_writer.write(frame)
@@ -162,7 +126,6 @@ def detect_backhands(video_path, output_dir, log_callback=print):
                 if frames_to_record == 0:
                     current_writer.release()
                     current_writer = None
-                    dual_log(f"🟢 Finished clip #{clip_count}")
 
             gc.collect()
 
@@ -170,5 +133,5 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     if current_writer:
         current_writer.release()
 
-    dual_log(f"✅ DONE — {len(all_clip_paths)} backhands detected")
+    log_callback(f"✅ Detection finished — {len(all_clip_paths)} backhands detected")
     return all_clip_paths
