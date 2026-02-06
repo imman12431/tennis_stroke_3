@@ -78,7 +78,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     # ============================
     log("Starting detection pass")
 
-    FRAME_STRIDE = 3
+    FRAME_STRIDE = 2
 
     accepted_frames = []
     cooldown_frames = 0
