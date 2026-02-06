@@ -84,7 +84,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log("Initializing MediaPipe")
 
     base_options = python.BaseOptions(
-        model_asset_path="pose_landmarker_light.task"
+        model_asset_path="pose_landmarker_lite.task"
     )
 
     options = mp.tasks.vision.PoseLandmarkerOptions(
