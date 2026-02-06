@@ -4,6 +4,7 @@ import gc
 import numpy as np
 import tensorflow as tf
 import joblib
+import subprocess
 from collections import deque
 from mediapipe.tasks import python
 import mediapipe as mp
@@ -65,7 +66,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     # ============================
     log("Starting detection pass")
 
-    accepted_frames = []   # store frame indices
+    accepted_frames = []
     cooldown_frames = 0
     frame_count = 0
 
@@ -144,7 +145,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log(f"Detection finished ({len(accepted_frames)} backhands)")
 
     # ============================
-    # PHASE 2: Write clips
+    # PHASE 2: MJPG → H.264 (ffmpeg)
     # ============================
     if not accepted_frames:
         log("No clips to write")
@@ -158,22 +159,19 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     pre_frames = int(fps * 1.0)
     post_frames = int(fps * 1.5)
 
-    # IMPORTANT: Streamlit-compatible codec
-    streamlit_fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-
     for i, center_frame in enumerate(accepted_frames, 1):
         start = max(0, center_frame - pre_frames)
         end = center_frame + post_frames
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
 
-        clip_path = os.path.abspath(
+        avi_path = os.path.abspath(
             os.path.join(output_dir, f"backhand_{i}.avi")
         )
 
         writer = cv2.VideoWriter(
-            clip_path,
-            streamlit_fourcc,
+            avi_path,
+            fourcc,
             fps,
             (width, height)
         )
@@ -188,7 +186,32 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             f += 1
 
         writer.release()
-        clip_paths.append(clip_path)
+
+        # ---- re-encode to H.264 (Streamlit-safe) ----
+        mp4_path = avi_path.replace(".avi", ".mp4")
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", avi_path,
+            "-c:v", "libx264",
+            "-profile:v", "high",
+            "-level", "4.1",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            mp4_path
+        ]
+
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+
+        os.remove(avi_path)
+
+        clip_paths.append(mp4_path)
         log(f"Wrote clip #{i}")
         gc.collect()
 
