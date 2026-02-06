@@ -33,7 +33,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
 
     log("Loading models")
 
@@ -168,7 +168,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
 
         clip_path = os.path.abspath(
-            os.path.join(output_dir, f"backhand_{i}.mp4")
+            os.path.join(output_dir, f"backhand_{i}.avi")
         )
 
         writer = cv2.VideoWriter(
