@@ -4,10 +4,23 @@ import gc
 import numpy as np
 import tensorflow as tf
 import joblib
-import subprocess
-from collections import deque
 from mediapipe.tasks import python
 import mediapipe as mp
+import imageio.v2 as imageio
+
+
+def write_mp4_h264(path, frames, fps):
+    writer = imageio.get_writer(
+        path,
+        format="ffmpeg",
+        fps=fps,
+        codec="libx264",
+        pixelformat="yuv420p",
+        output_params=["-movflags", "+faststart"]
+    )
+    for f in frames:
+        writer.append_data(f[:, :, ::-1])  # BGR → RGB
+    writer.close()
 
 
 def detect_backhands(video_path, output_dir, log_callback=print):
@@ -34,7 +47,6 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
 
     log("Loading models")
 
@@ -145,7 +157,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log(f"Detection finished ({len(accepted_frames)} backhands)")
 
     # ============================
-    # PHASE 2: MJPG → H.264 (ffmpeg)
+    # PHASE 2: DIRECT H.264 MP4 WRITE
     # ============================
     if not accepted_frames:
         log("No clips to write")
@@ -165,54 +177,25 @@ def detect_backhands(video_path, output_dir, log_callback=print):
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
 
-        avi_path = os.path.abspath(
-            os.path.join(output_dir, f"backhand_{i}.avi")
-        )
-
-        writer = cv2.VideoWriter(
-            avi_path,
-            fourcc,
-            fps,
-            (width, height)
-        )
-
+        frames = []
         f = start
         while f <= end:
             ret, frame = cap.read()
             if not ret:
                 break
-            writer.write(frame)
-            del frame
+            frames.append(frame)
             f += 1
 
-        writer.release()
-
-        # ---- re-encode to H.264 (Streamlit-safe) ----
-        mp4_path = avi_path.replace(".avi", ".mp4")
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", avi_path,
-            "-c:v", "libx264",
-            "-profile:v", "high",
-            "-level", "4.1",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            mp4_path
-        ]
-
-        subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True
+        mp4_path = os.path.abspath(
+            os.path.join(output_dir, f"backhand_{i}.mp4")
         )
 
-        os.remove(avi_path)
+        write_mp4_h264(mp4_path, frames, fps)
 
         clip_paths.append(mp4_path)
         log(f"Wrote clip #{i}")
+
+        del frames
         gc.collect()
 
     cap.release()
