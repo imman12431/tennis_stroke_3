@@ -5,37 +5,27 @@ import numpy as np
 import tensorflow as tf
 import joblib
 from collections import deque
-from datetime import datetime
-import psutil
 from mediapipe.tasks import python
 import mediapipe as mp
-import imageio.v2 as imageio
 
 
 def detect_backhands(video_path, output_dir, log_callback=print):
     """
-    Detects backhand strokes in a video using frame-by-frame MediaPipe Tasks API.
-    All clips are written at the end using imageio + H.264 (browser-safe).
-    Returns list of absolute clip paths.
+    Phase 1: detect backhand frame indices
+    Phase 2: write all clips at the end
     """
 
     os.makedirs(output_dir, exist_ok=True)
-    process = psutil.Process()
 
-    # -------------------------------------------------
-    # Logging helper (minimal)
-    # -------------------------------------------------
     def log(msg):
         try:
             log_callback(msg)
         except:
             pass
 
-    log("🚀 Starting backhand detection")
-
-    # -------------------------------------------------
-    # Video setup
-    # -------------------------------------------------
+    # ============================
+    # PHASE 0: Setup
+    # ============================
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Could not open video")
@@ -43,26 +33,24 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
-    frame_buffer = deque(maxlen=fps)  # 1 second pre-roll
+    log("Loading models")
 
-    # -------------------------------------------------
-    # Load models
-    # -------------------------------------------------
     keras_model = tf.keras.models.load_model(
-        "models/tennis_stroke/tennis_model_keras",
-        compile=False
+        "models/tennis_stroke/tennis_model_keras"
     )
     rejector = tf.keras.models.load_model(
-        "models/tennis_stroke/skeleton_rejector",
-        compile=False
+        "models/tennis_stroke/skeleton_rejector"
     )
     rejector.trainable = False
-    le = joblib.load("models/tennis_stroke/label_encoder_keras.pkl")
 
-    # -------------------------------------------------
-    # MediaPipe Tasks API
-    # -------------------------------------------------
+    le = joblib.load(
+        "models/tennis_stroke/label_encoder_keras.pkl"
+    )
+
+    log("Initializing MediaPipe")
+
     base_options = python.BaseOptions(
         model_asset_path="pose_landmarker_heavy.task"
     )
@@ -72,19 +60,14 @@ def detect_backhands(video_path, output_dir, log_callback=print):
         running_mode=mp.tasks.vision.RunningMode.VIDEO
     )
 
-    # -------------------------------------------------
-    # State
-    # -------------------------------------------------
-    all_clips = []   # list of (clip_path, frames)
-    clip_count = 0
+    # ============================
+    # PHASE 1: Detection only
+    # ============================
+    log("Starting detection pass")
 
-    frames_to_record = 0
+    accepted_frames = []   # store frame indices
     cooldown_frames = 0
-    current_clip_frames = None
-
-    frame_idx = 0
-
-    log("🧍 MediaPipe pose detection running")
+    frame_count = 0
 
     with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
         while cap.isOpened():
@@ -92,108 +75,124 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             if not ret:
                 break
 
-            timestamp_ms = int(1000 * frame_idx / fps)
-            frame_idx += 1
-
-            frame_buffer.append(frame)
+            timestamp_ms = int(1000 * frame_count / fps)
+            frame_count += 1
 
             if cooldown_frames > 0:
                 cooldown_frames -= 1
+                del frame
+                continue
 
             mp_image = mp.Image(
                 image_format=mp.ImageFormat.SRGB,
                 data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             )
 
-            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+            result = landmarker.detect_for_video(
+                mp_image, timestamp_ms
+            )
 
-            is_backhand = False
-
-            if result.pose_landmarks and cooldown_frames == 0:
+            if result.pose_landmarks:
                 landmarks = result.pose_landmarks[0]
 
-                coords = np.array([
-                    (lm.x * width, lm.y * height) for lm in landmarks
-                ])
+                all_coords = np.empty((33, 2), dtype=np.float32)
+                for i, lm in enumerate(landmarks):
+                    all_coords[i, 0] = lm.x * width
+                    all_coords[i, 1] = lm.y * height
 
-                mid_hip = (coords[23] + coords[24]) / 2
-                shoulder_dist = np.linalg.norm(coords[11] - coords[12]) or 1.0
+                mid_hip = (all_coords[23] + all_coords[24]) * 0.5
+                shoulder_dist = np.linalg.norm(
+                    all_coords[11] - all_coords[12]
+                )
+                if shoulder_dist < 1e-3:
+                    shoulder_dist = 1.0
 
-                idxs = [0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24]
-                feats = []
+                idxs = (0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24)
+                feats = np.empty(len(idxs) * 3, dtype=np.float32)
 
+                j = 0
                 for i in idxs:
-                    lm = landmarks[i]
-                    feats.extend([
-                        (coords[i][0] - mid_hip[0]) / shoulder_dist,
-                        (coords[i][1] - mid_hip[1]) / shoulder_dist,
-                        lm.visibility
-                    ])
+                    feats[j] = (all_coords[i, 0] - mid_hip[0]) / shoulder_dist
+                    feats[j + 1] = (all_coords[i, 1] - mid_hip[1]) / shoulder_dist
+                    feats[j + 2] = landmarks[i].visibility
+                    j += 3
 
-                X = np.array([feats], dtype=np.float32)
+                X = feats.reshape(1, -1)
 
                 pred = keras_model.predict_on_batch(X)[0]
-                class_idx = np.argmax(pred)
-                confidence = pred[class_idx]
+                class_idx = int(np.argmax(pred))
+                confidence = float(pred[class_idx])
                 label = le.inverse_transform([class_idx])[0]
 
                 if label.lower() == "backhand" and confidence > 0.85:
-                    rejector_score = rejector.predict(X, verbose=0)[0][0]
-                    if rejector_score > 0.9:
-                        is_backhand = True
-
-            # -------------------------------------------------
-            # Clip collection (NO writing yet)
-            # -------------------------------------------------
-            if is_backhand and frames_to_record <= 0:
-                clip_count += 1
-                log(f"🎾 Backhand detected #{clip_count}")
-
-                current_clip_frames = list(frame_buffer)
-                frames_to_record = int(fps * 1.5)
-                cooldown_frames = int(fps * 2)
-
-            elif frames_to_record > 0:
-                current_clip_frames.append(frame)
-                frames_to_record -= 1
-
-                if frames_to_record == 0:
-                    clip_path = os.path.abspath(
-                        os.path.join(output_dir, f"backhand_{clip_count}.mp4")
+                    rejector_score = float(
+                        rejector.predict(X, verbose=0)[0][0]
                     )
-                    all_clips.append((clip_path, current_clip_frames))
-                    current_clip_frames = None
 
-            # aggressive cleanup
-            gc.collect()
+                    if rejector_score > 0.9:
+                        accepted_frames.append(frame_count)
+                        cooldown_frames = fps * 2
+                        log(f"Backhand accepted at frame {frame_count}")
+
+                del all_coords, feats, X, pred
+
+            del frame, mp_image, result
 
     cap.release()
     gc.collect()
 
-    # -------------------------------------------------
-    # FINAL PHASE — write all videos (H.264 safe)
-    # -------------------------------------------------
-    log("🎬 Writing final videos (H.264 / browser-safe)")
+    log(f"Detection finished ({len(accepted_frames)} backhands)")
 
-    final_paths = []
+    # ============================
+    # PHASE 2: Write clips
+    # ============================
+    if not accepted_frames:
+        log("No clips to write")
+        return []
 
-    for path, frames in all_clips:
-        with imageio.get_writer(
-            path,
-            fps=fps,
-            codec="libx264",
-            format="mp4",
-            pixelformat="yuv420p"
-        ) as writer:
-            for f in frames:
-                writer.append_data(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+    log("Starting video writing pass")
 
-        final_paths.append(path)
+    cap = cv2.VideoCapture(video_path)
+    clip_paths = []
 
-        # free memory immediately
-        frames.clear()
+    pre_frames = int(fps * 1.0)
+    post_frames = int(fps * 1.5)
+
+    # IMPORTANT: Streamlit-compatible codec
+    streamlit_fourcc = cv2.VideoWriter_fourcc(*"avc1")
+
+    for i, center_frame in enumerate(accepted_frames, 1):
+        start = max(0, center_frame - pre_frames)
+        end = center_frame + post_frames
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+
+        clip_path = os.path.abspath(
+            os.path.join(output_dir, f"backhand_{i}.mp4")
+        )
+
+        writer = cv2.VideoWriter(
+            clip_path,
+            streamlit_fourcc,
+            fps,
+            (width, height)
+        )
+
+        f = start
+        while f <= end:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            writer.write(frame)
+            del frame
+            f += 1
+
+        writer.release()
+        clip_paths.append(clip_path)
+        log(f"Wrote clip #{i}")
         gc.collect()
 
-    log(f"✅ DONE — {len(final_paths)} backhands written")
+    cap.release()
+    log("All clips written")
 
-    return final_paths
+    return clip_paths
