@@ -25,7 +25,7 @@ def write_mp4_h264(path, frames, fps):
 
 def detect_backhands(video_path, output_dir, log_callback=print):
     """
-    Phase 1: detect backhand frame indices (IMAGE MODE)
+    Phase 1: detect backhand frame indices (every 3rd frame)
     Phase 2: write all clips at the end
     """
 
@@ -62,7 +62,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
         "models/tennis_stroke/label_encoder_keras.pkl"
     )
 
-    log("Initializing MediaPipe (IMAGE MODE)")
+    log("Initializing MediaPipe")
 
     base_options = python.BaseOptions(
         model_asset_path="pose_landmarker_heavy.task"
@@ -70,13 +70,15 @@ def detect_backhands(video_path, output_dir, log_callback=print):
 
     options = mp.tasks.vision.PoseLandmarkerOptions(
         base_options=base_options,
-        running_mode=mp.tasks.vision.RunningMode.IMAGE
+        running_mode=mp.tasks.vision.RunningMode.VIDEO
     )
 
     # ============================
     # PHASE 1: Detection only
     # ============================
     log("Starting detection pass")
+
+    FRAME_STRIDE = 3
 
     accepted_frames = []
     cooldown_frames = 0
@@ -90,6 +92,13 @@ def detect_backhands(video_path, output_dir, log_callback=print):
 
             frame_count += 1
 
+            # ---- NEW: process every 3rd frame ----
+            if frame_count % FRAME_STRIDE != 0:
+                del frame
+                continue
+
+            timestamp_ms = int(1000 * frame_count / fps)
+
             if cooldown_frames > 0:
                 cooldown_frames -= 1
                 del frame
@@ -100,8 +109,9 @@ def detect_backhands(video_path, output_dir, log_callback=print):
                 data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             )
 
-            # IMAGE MODE → detect()
-            result = landmarker.detect(mp_image)
+            result = landmarker.detect_for_video(
+                mp_image, timestamp_ms
+            )
 
             if result.pose_landmarks:
                 landmarks = result.pose_landmarks[0]
