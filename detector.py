@@ -13,18 +13,25 @@ import queue
 # --------------------------------------------------
 # Helper: write H.264 MP4 clips
 # --------------------------------------------------
-def write_mp4_h264(path, frames, fps):
-    writer = imageio.get_writer(
-        path,
-        format="ffmpeg",
-        fps=fps,
-        codec="libx264",
-        pixelformat="yuv420p",
-        output_params=["-movflags", "+faststart"]
-    )
-    for f in frames:
-        writer.append_data(f[:, :, ::-1])  # BGR → RGB
-    writer.close()
+def write_mp4_h264(mp4_path, frames, fps):
+    """Write frames to MP4 using OpenCV instead of imageio"""
+    import cv2
+
+    if not frames:
+        return
+
+    height, width = frames[0].shape[:2]
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
+
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open video writer for {mp4_path}")
+
+    for frame in frames:
+        writer.write(frame)
+
+    writer.release()
 
 # --------------------------------------------------
 # Worker: frame reading thread
