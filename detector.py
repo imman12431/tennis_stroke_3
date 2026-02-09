@@ -14,30 +14,47 @@ import queue
 # Helper: write H.264 MP4 clips
 # --------------------------------------------------
 def write_mp4_h264(mp4_path, frames, fps):
-    """Write frames to MP4 using OpenCV with H.264 codec"""
+    """Write frames to MP4 using OpenCV then re-encode with ffmpeg for browser compatibility"""
     import cv2
+    import subprocess
+    import os
 
     if not frames:
         return
 
     height, width = frames[0].shape[:2]
 
-    # Try avc1 (H.264) first for better browser compatibility
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    writer = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
+    # First write with mp4v codec (works reliably)
+    temp_path = mp4_path.replace('.mp4', '_temp.mp4')
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(temp_path, fourcc, fps, (width, height))
 
     if not writer.isOpened():
-        # Fallback to mp4v if avc1 doesn't work
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
-
-    if not writer.isOpened():
-        raise RuntimeError(f"Could not open video writer for {mp4_path}")
+        raise RuntimeError(f"Could not open video writer for {temp_path}")
 
     for frame in frames:
         writer.write(frame)
 
     writer.release()
+
+    # Re-encode with ffmpeg for browser compatibility (H.264)
+    try:
+        subprocess.run([
+            'ffmpeg', '-y', '-i', temp_path,
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            mp4_path
+        ], check=True, capture_output=True)
+
+        # Remove temp file
+        os.remove(temp_path)
+    except subprocess.CalledProcessError as e:
+        # If ffmpeg fails, just use the temp file
+        os.rename(temp_path, mp4_path)
+    except FileNotFoundError:
+        # ffmpeg not available, just use the temp file
+        os.rename(temp_path, mp4_path)
 
 # --------------------------------------------------
 # Worker: frame reading thread
