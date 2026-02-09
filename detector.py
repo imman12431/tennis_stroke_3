@@ -14,7 +14,7 @@ import queue
 # Helper: write H.264 MP4 clips
 # --------------------------------------------------
 def write_mp4_h264(mp4_path, frames, fps):
-    """Write frames to MP4 using OpenCV instead of imageio"""
+    """Write frames to MP4 using OpenCV with H.264 codec"""
     import cv2
 
     if not frames:
@@ -22,8 +22,14 @@ def write_mp4_h264(mp4_path, frames, fps):
 
     height, width = frames[0].shape[:2]
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # Try avc1 (H.264) first for better browser compatibility
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')
     writer = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
+
+    if not writer.isOpened():
+        # Fallback to mp4v if avc1 doesn't work
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
 
     if not writer.isOpened():
         raise RuntimeError(f"Could not open video writer for {mp4_path}")
