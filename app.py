@@ -1,3 +1,6 @@
+import imageio_ffmpeg
+imageio_ffmpeg.get_ffmpeg_exe()
+
 import os
 import time
 import tempfile
