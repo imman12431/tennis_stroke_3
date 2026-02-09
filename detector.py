@@ -14,47 +14,75 @@ import queue
 # Helper: write H.264 MP4 clips
 # --------------------------------------------------
 def write_mp4_h264(mp4_path, frames, fps):
-    """Write frames to MP4 using OpenCV then re-encode with ffmpeg for browser compatibility"""
+    """Write frames to MP4 with detailed debugging"""
     import cv2
     import subprocess
     import os
 
     if not frames:
+        print(f"ERROR: No frames to write for {mp4_path}")
         return
+
+    print(f"Writing {len(frames)} frames to {mp4_path}")
+    print(f"Frame shape: {frames[0].shape}, dtype: {frames[0].dtype}")
 
     height, width = frames[0].shape[:2]
 
-    # First write with mp4v codec (works reliably)
-    temp_path = mp4_path.replace('.mp4', '_temp.mp4')
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # Ensure frames are in BGR format (OpenCV expects BGR)
+    # If frames are RGB, convert them
+    if frames[0].shape[2] == 3:
+        # Check if conversion needed by looking at a sample
+        test_frame = frames[0]
+        # For now, assume they're already BGR from OpenCV
+
+    # Write directly with H.264 parameters
+    temp_path = mp4_path.replace('.mp4', '_temp.avi')
+
+    # Use XVID codec for temp file (very reliable)
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
     writer = cv2.VideoWriter(temp_path, fourcc, fps, (width, height))
 
     if not writer.isOpened():
         raise RuntimeError(f"Could not open video writer for {temp_path}")
 
-    for frame in frames:
+    for i, frame in enumerate(frames):
         writer.write(frame)
 
     writer.release()
+    print(f"Temp file written: {temp_path}, size: {os.path.getsize(temp_path)} bytes")
 
-    # Re-encode with ffmpeg for browser compatibility (H.264)
+    # Convert to web-compatible MP4 using ffmpeg
     try:
-        subprocess.run([
+        result = subprocess.run([
             'ffmpeg', '-y', '-i', temp_path,
             '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '22',
             '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
             mp4_path
-        ], check=True, capture_output=True)
+        ], capture_output=True, text=True, timeout=30)
 
-        # Remove temp file
-        os.remove(temp_path)
-    except subprocess.CalledProcessError as e:
-        # If ffmpeg fails, just use the temp file
-        os.rename(temp_path, mp4_path)
-    except FileNotFoundError:
-        # ffmpeg not available, just use the temp file
-        os.rename(temp_path, mp4_path)
+        if result.returncode == 0:
+            print(f"Final MP4 created: {mp4_path}, size: {os.path.getsize(mp4_path)} bytes")
+            os.remove(temp_path)
+        else:
+            print(f"FFmpeg error: {result.stderr}")
+            os.rename(temp_path, mp4_path)
+
+    except Exception as e:
+        print(f"FFmpeg exception: {e}")
+        # Fallback: try direct MP4 write
+        writer2 = cv2.VideoWriter(mp4_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+        for frame in frames:
+            writer2.write(frame)
+        writer2.release()
+
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    final_size = os.path.getsize(mp4_path) if os.path.exists(mp4_path) else 0
+    print(f"Final file: {mp4_path}, size: {final_size} bytes, exists: {os.path.exists(mp4_path)}")
 
 # --------------------------------------------------
 # Worker: frame reading thread
