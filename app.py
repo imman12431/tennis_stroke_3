@@ -1,6 +1,3 @@
-import imageio_ffmpeg
-imageio_ffmpeg.get_ffmpeg_exe()
-
 import os
 import time
 import tempfile
@@ -79,7 +76,7 @@ with st.sidebar:
 # --------------------------------------------------
 uploaded_file = st.file_uploader(
     "Upload a video file",
-    type=["mp4", "mov", "avi"],
+    type=["mp4"],
     disabled=st.session_state.processing
 )
 
