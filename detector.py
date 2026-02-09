@@ -6,61 +6,35 @@ import tensorflow as tf
 import joblib
 from mediapipe.tasks import python
 import mediapipe as mp
-import imageio.v2 as imageio
 import threading
 import queue
 
-# --------------------------------------------------
-# Helper: write H.264 MP4 clips
-# --------------------------------------------------
-def write_mp4_h264(mp4_path, frames, fps):
-    """Write frames to MP4 optimized for web playback"""
-    import cv2
-    import subprocess
-    import os
-    import tempfile
 
+# --------------------------------------------------
+# Helper: write XVID AVI clips
+# --------------------------------------------------
+def write_video_clip(output_path, frames, fps):
+    """Write frames to AVI using XVID codec for browser compatibility"""
     if not frames:
-        return
+        return output_path
 
     height, width = frames[0].shape[:2]
 
-    # Write frames as individual images first (most reliable)
-    temp_dir = tempfile.mkdtemp()
+    # Use XVID codec - most reliable and plays in browsers
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
 
-    try:
-        # Save frames as images
-        for i, frame in enumerate(frames):
-            frame_path = os.path.join(temp_dir, f"frame_{i:04d}.png")
-            cv2.imwrite(frame_path, frame)
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-        # Use ffmpeg to create web-compatible MP4
-        subprocess.run([
-            'ffmpeg', '-y',
-            '-framerate', str(fps),
-            '-i', os.path.join(temp_dir, 'frame_%04d.png'),
-            '-c:v', 'libx264',
-            '-profile:v', 'baseline',  # Most compatible H.264 profile
-            '-level', '3.0',
-            '-pix_fmt', 'yuv420p',
-            '-movflags', '+faststart',  # Enable streaming
-            '-an',  # No audio
-            mp4_path
-        ], check=True, capture_output=True)
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open video writer for {output_path}")
 
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg failed: {e.stderr.decode()}")
-        # Fallback to OpenCV
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
-        for frame in frames:
-            writer.write(frame)
-        writer.release()
+    for frame in frames:
+        writer.write(frame)
 
-    finally:
-        # Cleanup temp directory
-        import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    writer.release()
+
+    return output_path
+
 
 # --------------------------------------------------
 # Worker: frame reading thread
@@ -73,6 +47,7 @@ def frame_reader(cap, frame_queue, stop_event):
             break
         frame_queue.put(frame)
     stop_event.set()  # signal that reading is done
+
 
 # --------------------------------------------------
 # Main detection function
@@ -224,7 +199,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log(f"Detection finished ({len(accepted_frames)} backhands)")
 
     # ============================
-    # PHASE 2: DIRECT H.264 MP4 WRITE
+    # PHASE 2: WRITE CLIPS AS AVI
     # ============================
     if not accepted_frames:
         log("No clips to write")
@@ -253,13 +228,14 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             frames.append(frame)
             f += 1
 
-        mp4_path = os.path.abspath(
-            os.path.join(output_dir, f"backhand_{i}.mp4")
+        # Changed to .avi extension
+        clip_path = os.path.abspath(
+            os.path.join(output_dir, f"backhand_{i}.avi")
         )
 
-        write_mp4_h264(mp4_path, frames, fps)
+        write_video_clip(clip_path, frames, fps)
 
-        clip_paths.append(mp4_path)
+        clip_paths.append(clip_path)
         log(f"Wrote clip #{i}")
 
         del frames
