@@ -34,10 +34,12 @@ def write_video_clip(output_path, frames, fps):
 
     writer.release()
 
+    print(f"[DEBUG] Temp AVI created: {temp_avi}, size: {os.path.getsize(temp_avi)}")
+
     # Convert AVI to MP4 using ffmpeg if available
     try:
         import subprocess
-        subprocess.run([
+        result = subprocess.run([
             'ffmpeg', '-y', '-i', temp_avi,
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
@@ -45,14 +47,18 @@ def write_video_clip(output_path, frames, fps):
             output_path
         ], check=True, capture_output=True, timeout=10)
 
+        print(f"[DEBUG] FFmpeg conversion SUCCESS")
+        print(f"[DEBUG] MP4 created: {output_path}, size: {os.path.getsize(output_path)}")
+
         # Success - remove temp file and return MP4
         os.remove(temp_avi)
         return output_path
 
-    except:
+    except Exception as e:
+        print(f"[DEBUG] FFmpeg conversion FAILED: {e}")
         # FFmpeg failed or not available - just rename AVI to MP4
-        # Streamlit might still play it
         os.rename(temp_avi, output_path)
+        print(f"[DEBUG] Renamed AVI to MP4: {output_path}")
         return output_path
 
 
