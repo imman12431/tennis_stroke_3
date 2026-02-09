@@ -80,6 +80,7 @@ uploaded_file = st.file_uploader(
     disabled=st.session_state.processing
 )
 
+
 # --------------------------------------------------
 # Worker thread
 # --------------------------------------------------
@@ -94,6 +95,7 @@ def worker_fn(video_path, output_dir, log_queue):
     )
 
     log_queue.put(("__DONE__", clips))
+
 
 # --------------------------------------------------
 # Start job
@@ -164,6 +166,16 @@ if not st.session_state.processing and st.session_state.clips:
                 size = os.path.getsize(clip)
                 st.write("Size (bytes):", size)
 
+                # Debug: Check video properties
+                import cv2
+
+                cap = cv2.VideoCapture(clip)
+                if cap.isOpened():
+                    st.write(f"FPS: {cap.get(cv2.CAP_PROP_FPS)}")
+                    st.write(f"Frames: {int(cap.get(cv2.CAP_PROP_FRAME_COUNT))}")
+                    st.write(f"Codec: {int(cap.get(cv2.CAP_PROP_FOURCC))}")
+                    cap.release()
+
                 st.markdown("**Playback:**")
                 st.video(clip)
 
@@ -174,7 +186,8 @@ if not st.session_state.processing and st.session_state.clips:
                     "⬇️ Download clip",
                     data=video_bytes,
                     file_name=os.path.basename(clip),
-                    mime="video/mp4"
+                    mime="video/avi",
+                    key=f"download_{i}"
                 )
             else:
                 st.error("File does NOT exist at render time!")
