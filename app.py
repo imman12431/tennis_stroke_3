@@ -1,89 +1,192 @@
-import streamlit as st
 import os
+import time
 import tempfile
+import threading
+import queue
+
+import streamlit as st
+from detector import detect_backhands
 
 # --------------------------------------------------
-# Setup
+# Page config
 # --------------------------------------------------
+st.set_page_config(
+    page_title="Tennis Backhand Detector",
+    layout="wide",
+)
 
-st.set_page_config(page_title="Tennis Backhand Detector", layout="centered")
-
+# --------------------------------------------------
+# Paths
+# --------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEMO_VIDEOS = {
-    "Jannik Sinner": "sinner.mp4",
-    "Novak Djokovic": "djokovic.mp4",
+    "Jannik Sinner": os.path.join(BASE_DIR, "sinner.mp4"),
+    "Novak Djokovic": os.path.join(BASE_DIR, "djokovic.mp4"),
 }
 
+OUTPUT_DIR = os.path.join(BASE_DIR, "data", "outputs")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 # --------------------------------------------------
-# UI
+# Session state
 # --------------------------------------------------
+if "processing" not in st.session_state:
+    st.session_state.processing = False
+if "clips" not in st.session_state:
+    st.session_state.clips = []
+if "log_queue" not in st.session_state:
+    st.session_state.log_queue = queue.Queue()
+if "logs" not in st.session_state:
+    st.session_state.logs = []
+if "worker" not in st.session_state:
+    st.session_state.worker = None
+if "video_path" not in st.session_state:
+    st.session_state.video_path = None
 
-st.title("🎾 Tennis Backhand Detector")
+# --------------------------------------------------
+# Title
+# --------------------------------------------------
+st.title("🎾 Tennis Backhand Detection Demo")
 
-st.markdown(
-    """
-Choose **how you want to try the app**:
-- Use a **preloaded demo video**
-- Upload **your own video**
-"""
-)
+if st.session_state.processing:
+    st.info("⏳ Processing video… please wait.")
 
-input_mode = st.radio(
+# --------------------------------------------------
+# VIDEO SELECTION (always visible)
+# --------------------------------------------------
+st.subheader("1️⃣ Choose a video")
+
+video_source = st.radio(
     "Video source",
-    options=["Use demo video", "Upload my own video"],
+    ["Use demo video", "Upload your own"],
+    disabled=st.session_state.processing,
 )
 
-video_path = None
-
-# --------------------------------------------------
-# Demo video branch
-# --------------------------------------------------
-
-if input_mode == "Use demo video":
+# -------------------------
+# Demo videos
+# -------------------------
+if video_source == "Use demo video":
     demo_choice = st.radio(
-        "Choose a demo video:",
-        options=list(DEMO_VIDEOS.keys()),
+        "Choose a demo clip",
+        list(DEMO_VIDEOS.keys()),
+        disabled=st.session_state.processing,
     )
 
-    video_filename = DEMO_VIDEOS[demo_choice]
-    video_path = os.path.join(BASE_DIR, video_filename)
+    demo_path = DEMO_VIDEOS[demo_choice]
 
-    st.video(video_path)
-    st.success(f"Using demo video: {demo_choice}")
+    if os.path.exists(demo_path):
+        st.session_state.video_path = demo_path
+        st.video(demo_path)
+    else:
+        st.error(f"Demo video not found: {demo_path}")
 
-# --------------------------------------------------
-# Upload branch
-# --------------------------------------------------
-
+# -------------------------
+# Upload
+# -------------------------
 else:
     uploaded_file = st.file_uploader(
-        "Upload a tennis video (mp4)",
-        type=["mp4", "mov"],
+        "Upload a tennis video (MP4)",
+        type=["mp4"],
+        disabled=st.session_state.processing,
     )
 
     if uploaded_file is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
             tmp.write(uploaded_file.read())
-            video_path = tmp.name
+            st.session_state.video_path = tmp.name
 
-        st.video(video_path)
-        st.success("Using uploaded video")
+        st.video(st.session_state.video_path)
+
+# --------------------------------------------------
+# Worker thread
+# --------------------------------------------------
+def worker_fn(video_path, output_dir, log_queue):
+    def logger(msg):
+        log_queue.put(msg)
+
+    clips = detect_backhands(
+        video_path=video_path,
+        output_dir=output_dir,
+        log_callback=logger,
+    )
+
+    log_queue.put(("__DONE__", clips))
 
 # --------------------------------------------------
 # Run detection
 # --------------------------------------------------
+st.subheader("2️⃣ Run detection")
 
-st.divider()
+if st.session_state.video_path and not st.session_state.processing:
+    if st.button("▶️ Run Backhand Detection"):
+        st.session_state.processing = True
+        st.session_state.clips = []
+        st.session_state.logs.clear()
 
-if video_path is not None:
-    if st.button("🚀 Run backhand detection"):
-        st.info("Running detection...")
-        st.write("Video path:", video_path)
+        st.session_state.worker = threading.Thread(
+            target=worker_fn,
+            args=(
+                st.session_state.video_path,
+                OUTPUT_DIR,
+                st.session_state.log_queue,
+            ),
+            daemon=True,
+        )
+        st.session_state.worker.start()
 
-        # ---- CALL YOUR PIPELINE HERE ----
-        # clips = detect_backhands(video_path, ...)
-        # st.success(f"Detected {len(clips)} backhands")
+# --------------------------------------------------
+# Drain log queue (EVERY rerun)
+# --------------------------------------------------
+while not st.session_state.log_queue.empty():
+    item = st.session_state.log_queue.get()
 
-else:
-    st.warning("Please select or upload a video to continue.")
+    if isinstance(item, tuple) and item[0] == "__DONE__":
+        clips = item[1]
+
+        # Wait until files exist on disk
+        for _ in range(30):
+            if all(os.path.exists(p) for p in clips):
+                break
+            time.sleep(0.1)
+
+        st.session_state.clips = clips
+        st.session_state.processing = False
+    else:
+        st.session_state.logs.append(item)
+
+# --------------------------------------------------
+# Progress logs (clean)
+# --------------------------------------------------
+if st.session_state.logs:
+    st.subheader("Progress")
+    st.code("\n".join(st.session_state.logs[-15:]))
+
+# --------------------------------------------------
+# RESULTS
+# --------------------------------------------------
+if not st.session_state.processing and st.session_state.clips:
+    st.subheader("✅ Detected Backhands")
+
+    for i, clip in enumerate(st.session_state.clips, 1):
+        if not os.path.exists(clip):
+            continue
+
+        st.markdown(f"### 🎾 Backhand {i}")
+        st.video(clip)
+
+        with open(clip, "rb") as f:
+            st.download_button(
+                label="⬇️ Download clip",
+                data=f.read(),
+                file_name=os.path.basename(clip),
+                mime="video/mp4",
+                key=f"download_{i}",
+            )
+
+# --------------------------------------------------
+# Force rerun while processing
+# --------------------------------------------------
+if st.session_state.processing:
+    time.sleep(1)
+    st.rerun()
