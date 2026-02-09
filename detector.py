@@ -11,29 +11,49 @@ import queue
 
 
 # --------------------------------------------------
-# Helper: write XVID AVI clips
+# Helper: write video clips
 # --------------------------------------------------
 def write_video_clip(output_path, frames, fps):
-    """Write frames to AVI using XVID codec for browser compatibility"""
+    """Write frames to MP4 via AVI intermediate (for browser compatibility)"""
     if not frames:
         return output_path
 
     height, width = frames[0].shape[:2]
 
-    # Use XVID codec - most reliable and plays in browsers
+    # First write as AVI with XVID codec (reliable)
+    temp_avi = output_path.replace('.mp4', '_temp.avi')
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
 
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    writer = cv2.VideoWriter(temp_avi, fourcc, fps, (width, height))
 
     if not writer.isOpened():
-        raise RuntimeError(f"Could not open video writer for {output_path}")
+        raise RuntimeError(f"Could not open video writer for {temp_avi}")
 
     for frame in frames:
         writer.write(frame)
 
     writer.release()
 
-    return output_path
+    # Convert AVI to MP4 using ffmpeg if available
+    try:
+        import subprocess
+        subprocess.run([
+            'ffmpeg', '-y', '-i', temp_avi,
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-pix_fmt', 'yuv420p',
+            output_path
+        ], check=True, capture_output=True, timeout=10)
+
+        # Success - remove temp file and return MP4
+        os.remove(temp_avi)
+        return output_path
+
+    except:
+        # FFmpeg failed or not available - just rename AVI to MP4
+        # Streamlit might still play it
+        os.rename(temp_avi, output_path)
+        return output_path
 
 
 # --------------------------------------------------
@@ -199,7 +219,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log(f"Detection finished ({len(accepted_frames)} backhands)")
 
     # ============================
-    # PHASE 2: WRITE CLIPS AS AVI
+    # PHASE 2: WRITE CLIPS AS MP4
     # ============================
     if not accepted_frames:
         log("No clips to write")
@@ -228,9 +248,8 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             frames.append(frame)
             f += 1
 
-        # Changed to .avi extension
         clip_path = os.path.abspath(
-            os.path.join(output_dir, f"backhand_{i}.avi")
+            os.path.join(output_dir, f"backhand_{i}.mp4")
         )
 
         write_video_clip(clip_path, frames, fps)
