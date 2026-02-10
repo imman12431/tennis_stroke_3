@@ -16,3 +16,6 @@ mediapipe==0.10.32
 tqdm==4.66.1
 imageio==2.31.1
 imageio-ffmpeg==0.4.8
+imageio[ffmpeg]
+
+setuptools
