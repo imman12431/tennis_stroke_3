@@ -188,8 +188,8 @@ def detect_backhands(video_path, output_dir, log_callback=print):
 
     log("Starting detection pass")
 
-    frame_queue = queue.Queue(maxsize=64)
-    feature_queue = queue.Queue(maxsize=64)
+    frame_queue = queue.Queue(maxsize=200)
+    feature_queue = queue.Queue(maxsize=200)
     accepted_frames = []
 
     t1 = threading.Thread(target=frame_reader, args=(cap, frame_queue))
