@@ -141,7 +141,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     # -----------------------------
     # Start threaded frame reader
     # -----------------------------
-    frame_queue = queue.Queue(maxsize=50)
+    frame_queue = queue.Queue(maxsize=200)
     stop_event = threading.Event()
     reader_thread = threading.Thread(target=frame_reader, args=(cap, frame_queue, stop_event))
     reader_thread.start()
