@@ -6,28 +6,144 @@ import tensorflow as tf
 import joblib
 from mediapipe.tasks import python
 import mediapipe as mp
-import imageio.v2 as imageio
+import threading
+import queue
 
 
-def write_mp4_h264(path, frames, fps):
-    writer = imageio.get_writer(
-        path,
-        format="ffmpeg",
-        fps=fps,
-        codec="libx264",
-        pixelformat="yuv420p",
-        output_params=["-movflags", "+faststart"]
-    )
-    for f in frames:
-        writer.append_data(f[:, :, ::-1])  # BGR → RGB
-    writer.close()
+# --------------------------------------------------
+# Helper: write video clips
+# --------------------------------------------------
+def write_video_clip(output_path, frames, fps):
+    if not frames:
+        return output_path
+
+    height, width = frames[0].shape[:2]
+    temp_avi = output_path.replace('.mp4', '_temp.avi')
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    writer = cv2.VideoWriter(temp_avi, fourcc, fps, (width, height))
+
+    for frame in frames:
+        writer.write(frame)
+    writer.release()
+
+    try:
+        import subprocess
+        subprocess.run([
+            'ffmpeg', '-y', '-i', temp_avi,
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-pix_fmt', 'yuv420p',
+            output_path
+        ], check=True, capture_output=True, timeout=10)
+        os.remove(temp_avi)
+    except Exception:
+        os.rename(temp_avi, output_path)
+
+    return output_path
 
 
+# --------------------------------------------------
+# Worker 1: frame reader
+# --------------------------------------------------
+def frame_reader(cap, frame_queue):
+    frame_idx = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_queue.put((frame_idx, frame))
+        frame_idx += 1
+    frame_queue.put(None)
+
+
+# --------------------------------------------------
+# Worker 2: pose + feature extraction
+# --------------------------------------------------
+def pose_worker(frame_queue, feature_queue, options, width, height, fps):
+    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
+        while True:
+            item = frame_queue.get()
+            if item is None:
+                break
+
+            frame_idx, frame = item
+            timestamp_ms = int(1000 * frame_idx / fps)
+
+            mp_image = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            )
+
+            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+            if result.pose_landmarks:
+                landmarks = result.pose_landmarks[0]
+
+                all_coords = np.empty((33, 2), dtype=np.float32)
+                for i, lm in enumerate(landmarks):
+                    all_coords[i, 0] = lm.x * width
+                    all_coords[i, 1] = lm.y * height
+
+                mid_hip = (all_coords[23] + all_coords[24]) * 0.5
+                shoulder_dist = np.linalg.norm(all_coords[11] - all_coords[12])
+                if shoulder_dist < 1e-3:
+                    shoulder_dist = 1.0
+
+                idxs = (0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24)
+                feats = np.empty(len(idxs) * 3, dtype=np.float32)
+
+                j = 0
+                for i in idxs:
+                    feats[j] = (all_coords[i, 0] - mid_hip[0]) / shoulder_dist
+                    feats[j + 1] = (all_coords[i, 1] - mid_hip[1]) / shoulder_dist
+                    feats[j + 2] = landmarks[i].visibility
+                    j += 3
+
+                feature_queue.put((frame_idx, feats))
+
+            del frame, mp_image, result
+
+    feature_queue.put(None)
+
+
+# --------------------------------------------------
+# Worker 3: ML inference
+# --------------------------------------------------
+def ml_worker(feature_queue, keras_model, rejector, le, fps, log, accepted_frames):
+    cooldown_frames = 0
+
+    while True:
+        item = feature_queue.get()
+        if item is None:
+            break
+
+        frame_idx, feats = item
+
+        if cooldown_frames > 0:
+            cooldown_frames -= 1
+            continue
+
+        X = feats.reshape(1, -1)
+
+        pred = keras_model.predict_on_batch(X)[0]
+        class_idx = int(np.argmax(pred))
+        confidence = float(pred[class_idx])
+        label = le.inverse_transform([class_idx])[0]
+
+        if label.lower() == "backhand" and confidence > 0.85:
+            rejector_score = float(rejector.predict(X, verbose=0)[0][0])
+            if rejector_score > 0.9:
+                accepted_frames.append(frame_idx)
+                cooldown_frames = fps * 2
+                log(f"Backhand accepted at frame {frame_idx}")
+
+        del feats, X, pred
+
+
+# --------------------------------------------------
+# Main detection function
+# --------------------------------------------------
 def detect_backhands(video_path, output_dir, log_callback=print):
-    """
-    Phase 1: detect backhand frame indices
-    Phase 2: write all clips at the end
-    """
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -37,9 +153,6 @@ def detect_backhands(video_path, output_dir, log_callback=print):
         except:
             pass
 
-    # ============================
-    # PHASE 0: Setup
-    # ============================
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("Could not open video")
@@ -65,7 +178,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log("Initializing MediaPipe")
 
     base_options = python.BaseOptions(
-        model_asset_path="pose_landmarker_heavy.task"
+        model_asset_path="pose_landmarker_lite.task"
     )
 
     options = mp.tasks.vision.PoseLandmarkerOptions(
@@ -73,83 +186,23 @@ def detect_backhands(video_path, output_dir, log_callback=print):
         running_mode=mp.tasks.vision.RunningMode.VIDEO
     )
 
-    # ============================
-    # PHASE 1: Detection only
-    # ============================
     log("Starting detection pass")
 
+    frame_queue = queue.Queue(maxsize=64)
+    feature_queue = queue.Queue(maxsize=64)
     accepted_frames = []
-    cooldown_frames = 0
-    frame_count = 0
 
-    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+    t1 = threading.Thread(target=frame_reader, args=(cap, frame_queue))
+    t2 = threading.Thread(target=pose_worker, args=(frame_queue, feature_queue, options, width, height, fps))
+    t3 = threading.Thread(target=ml_worker, args=(feature_queue, keras_model, rejector, le, fps, log, accepted_frames))
 
-            timestamp_ms = int(1000 * frame_count / fps)
-            frame_count += 1
+    t1.start()
+    t2.start()
+    t3.start()
 
-            if cooldown_frames > 0:
-                cooldown_frames -= 1
-                del frame
-                continue
-
-            mp_image = mp.Image(
-                image_format=mp.ImageFormat.SRGB,
-                data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            )
-
-            result = landmarker.detect_for_video(
-                mp_image, timestamp_ms
-            )
-
-            if result.pose_landmarks:
-                landmarks = result.pose_landmarks[0]
-
-                all_coords = np.empty((33, 2), dtype=np.float32)
-                for i, lm in enumerate(landmarks):
-                    all_coords[i, 0] = lm.x * width
-                    all_coords[i, 1] = lm.y * height
-
-                mid_hip = (all_coords[23] + all_coords[24]) * 0.5
-                shoulder_dist = np.linalg.norm(
-                    all_coords[11] - all_coords[12]
-                )
-                if shoulder_dist < 1e-3:
-                    shoulder_dist = 1.0
-
-                idxs = (0, 2, 5, 11, 12, 13, 14, 15, 16, 23, 24)
-                feats = np.empty(len(idxs) * 3, dtype=np.float32)
-
-                j = 0
-                for i in idxs:
-                    feats[j] = (all_coords[i, 0] - mid_hip[0]) / shoulder_dist
-                    feats[j + 1] = (all_coords[i, 1] - mid_hip[1]) / shoulder_dist
-                    feats[j + 2] = landmarks[i].visibility
-                    j += 3
-
-                X = feats.reshape(1, -1)
-
-                pred = keras_model.predict_on_batch(X)[0]
-                class_idx = int(np.argmax(pred))
-                confidence = float(pred[class_idx])
-                label = le.inverse_transform([class_idx])[0]
-
-                if label.lower() == "backhand" and confidence > 0.85:
-                    rejector_score = float(
-                        rejector.predict(X, verbose=0)[0][0]
-                    )
-
-                    if rejector_score > 0.9:
-                        accepted_frames.append(frame_count)
-                        cooldown_frames = fps * 2
-                        log(f"Backhand accepted at frame {frame_count}")
-
-                del all_coords, feats, X, pred
-
-            del frame, mp_image, result
+    t1.join()
+    t2.join()
+    t3.join()
 
     cap.release()
     gc.collect()
@@ -157,7 +210,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log(f"Detection finished ({len(accepted_frames)} backhands)")
 
     # ============================
-    # PHASE 2: DIRECT H.264 MP4 WRITE
+    # PHASE 2: WRITE CLIPS AS MP4
     # ============================
     if not accepted_frames:
         log("No clips to write")
@@ -186,13 +239,12 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             frames.append(frame)
             f += 1
 
-        mp4_path = os.path.abspath(
+        clip_path = os.path.abspath(
             os.path.join(output_dir, f"backhand_{i}.mp4")
         )
 
-        write_mp4_h264(mp4_path, frames, fps)
-
-        clip_paths.append(mp4_path)
+        write_video_clip(clip_path, frames, fps)
+        clip_paths.append(clip_path)
         log(f"Wrote clip #{i}")
 
         del frames
