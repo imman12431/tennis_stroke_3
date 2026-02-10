@@ -94,6 +94,11 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # Processing resolution (lower = faster)
+    PROCESS_WIDTH = 640
+    PROCESS_HEIGHT = 360
+
+    log(f"Video: {width}x{height}, Processing at: {PROCESS_WIDTH}x{PROCESS_HEIGHT}")
     log("Loading models")
 
     keras_model = tf.keras.models.load_model(
@@ -135,7 +140,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
 
     # Pre-allocate arrays to avoid repeated allocation
     all_coords = np.empty((33, 2), dtype=np.float32)
-    feats = np.empty(33, dtype=np.float32)  # 11 landmarks * 3 features
+    feats = np.empty(33, dtype=np.float32)
 
     with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
         while not stop_event.is_set() or not frame_queue.empty():
@@ -151,9 +156,12 @@ def detect_backhands(video_path, output_dir, log_callback=print):
                 cooldown_frames -= 1
                 continue
 
+            # Resize frame for faster processing
+            frame_small = cv2.resize(frame, (PROCESS_WIDTH, PROCESS_HEIGHT))
+
             mp_image = mp.Image(
                 image_format=mp.ImageFormat.SRGB,
-                data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                data=cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
             )
 
             result = landmarker.detect_for_video(mp_image, timestamp_ms)
@@ -161,10 +169,10 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             if result.pose_landmarks:
                 landmarks = result.pose_landmarks[0]
 
-                # Vectorized coordinate extraction
+                # Use processing resolution for coordinates
                 for i, lm in enumerate(landmarks):
-                    all_coords[i, 0] = lm.x * width
-                    all_coords[i, 1] = lm.y * height
+                    all_coords[i, 0] = lm.x * PROCESS_WIDTH
+                    all_coords[i, 1] = lm.y * PROCESS_HEIGHT
 
                 mid_hip = (all_coords[23] + all_coords[24]) * 0.5
                 shoulder_dist = np.linalg.norm(all_coords[11] - all_coords[12])
@@ -182,7 +190,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
 
                 X = feats.reshape(1, -1)
 
-                # Batch prediction (faster)
+                # Batch prediction
                 pred = keras_model.predict_on_batch(X)[0]
                 class_idx = int(np.argmax(pred))
                 confidence = float(pred[class_idx])
@@ -204,7 +212,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
     log(f"Detection finished ({len(accepted_frames)} backhands)")
 
     # ============================
-    # PHASE 2: WRITE CLIPS
+    # PHASE 2: WRITE CLIPS (using original resolution)
     # ============================
     if not accepted_frames:
         log("No clips to write")
@@ -212,6 +220,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
 
     log("Starting video writing pass")
 
+    # Re-open video for writing clips at original resolution
     cap = cv2.VideoCapture(video_path)
     clip_paths = []
 
@@ -230,7 +239,7 @@ def detect_backhands(video_path, output_dir, log_callback=print):
             ret, frame = cap.read()
             if not ret:
                 break
-            frames.append(frame)
+            frames.append(frame)  # Keep original resolution for output
             f += 1
 
         clip_path = os.path.abspath(
