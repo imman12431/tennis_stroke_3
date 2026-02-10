@@ -14,19 +14,7 @@ st.set_page_config(
     page_title="Tennis Backhand Detector",
     layout="wide",
 )
-st.markdown("""
-## Project Overview
 
-This project detects and extracts tennis backhand shots from match videos using a **frame-wise, pose-based classification pipeline with multi-stage filtering**.
-
-Each video is processed frame by frame using **MediaPipe Pose Landmarker (lite model)** to extract 33 body keypoints. From these keypoints, a **hand-engineered, normalized skeletal feature vector** is constructed using joint positions relative to the mid-hip and scaled by shoulder width, with landmark visibility included as additional features.
-
-The resulting feature vectors are classified using a trained **TensorFlow/Keras neural network**, followed by a second **binary rejector model** that filters false positives. High-confidence backhand detections trigger a **cooldown window** to prevent duplicate detections of the same stroke.
-
-For performance, the system uses **multi-threaded frame decoding** and performs detection in a **first pass**, followed by a **second pass** that cuts short MP4 clips around each detected backhand using **OpenCV and FFmpeg**.
-
-Users can test the pipeline using **preloaded professional match footage** or upload their own videos, with each detected backhand exported as a **downloadable clip**.
-""")
 # --------------------------------------------------
 # Paths
 # --------------------------------------------------
@@ -60,7 +48,19 @@ if "video_path" not in st.session_state:
 # Title
 # --------------------------------------------------
 st.title("🎾 Tennis Backhand Detection Demo")
+st.markdown("""
+## Project Overview
 
+This project detects and extracts tennis backhand shots from match videos using a **frame-wise, pose-based classification pipeline with multi-stage filtering**.
+
+Each video is processed frame by frame using **MediaPipe Pose Landmarker (lite model)** to extract 33 body keypoints. From these keypoints, a **hand-engineered, normalized skeletal feature vector** is constructed using joint positions relative to the mid-hip and scaled by shoulder width, with landmark visibility included as additional features.
+
+The resulting feature vectors are classified using a trained **TensorFlow/Keras neural network**, followed by a second **binary rejector model** that filters false positives. High-confidence backhand detections trigger a **cooldown window** to prevent duplicate detections of the same stroke.
+
+For performance, the system uses **multi-threaded frame decoding** and performs detection in a **first pass**, followed by a **second pass** that cuts short MP4 clips around each detected backhand using **OpenCV and FFmpeg**.
+
+Users can test the pipeline using **preloaded professional match footage** or upload their own videos, with each detected backhand exported as a **downloadable clip**.
+""")
 if st.session_state.processing:
     st.info("⏳ Processing video… please wait.")
 
