@@ -61,6 +61,7 @@ For performance, the system uses **multi-threaded frame decoding** and performs 
 
 Users can test the pipeline using **preloaded professional match footage** or upload their own videos, with each detected backhand exported as a **downloadable clip**.
 """)
+
 if st.session_state.processing:
     st.info("⏳ Processing video… please wait.")
 
@@ -89,7 +90,9 @@ if video_source == "Use demo video":
 
     if os.path.exists(demo_path):
         st.session_state.video_path = demo_path
-        st.video(demo_path)
+        col1, col2 = st.columns([2, 3])
+        with col1:
+            st.video(demo_path)
     else:
         st.error(f"Demo video not found: {demo_path}")
 
@@ -108,7 +111,9 @@ else:
             tmp.write(uploaded_file.read())
             st.session_state.video_path = tmp.name
 
-        st.video(st.session_state.video_path)
+        col1, col2 = st.columns([2, 3])
+        with col1:
+            st.video(st.session_state.video_path)
 
 # --------------------------------------------------
 # Worker thread
@@ -185,7 +190,10 @@ if not st.session_state.processing and st.session_state.clips:
             continue
 
         st.markdown(f"### 🎾 Backhand {i}")
-        st.video(clip)
+
+        col1, col2 = st.columns([2, 3])
+        with col1:
+            st.video(clip)
 
         with open(clip, "rb") as f:
             st.download_button(
