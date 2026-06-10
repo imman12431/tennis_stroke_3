@@ -26,7 +26,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from ..core.detector import detect_backhands
+from core.detector import detect_backhands
 
 # Configure logging
 _log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
