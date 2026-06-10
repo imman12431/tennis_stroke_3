@@ -1,0 +1,8 @@
+[server]
+enableXsrfProtection = false
+
+[runner]
+magicEnabled = false
+
+[global]
+environmentVariables = { TF_USE_LEGACY_KERAS = "1" }
